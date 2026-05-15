@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class OcrHealth(BaseModel):
@@ -79,6 +79,66 @@ class DocumentIndexResponse(BaseModel):
     chunk_count: int
     embedding_model: str
     vector_db: str
+
+
+class RetrievalQueryRequest(BaseModel):
+    document_id: str
+    query: str = Field(min_length=1)
+    top_k: int = Field(default=6, ge=1, le=20)
+
+    @field_validator("document_id", "query")
+    @classmethod
+    def require_non_empty_text(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Value must not be empty.")
+        return cleaned
+
+
+class EvidenceSource(BaseModel):
+    filename: str
+    source_type: str
+    ocr_confidence: float | None = None
+
+
+class EvidenceChunk(BaseModel):
+    chunk_id: str
+    document_id: str
+    page_number: int
+    text: str
+    relevance_score: float
+    source: EvidenceSource
+
+
+class RetrievalQueryResponse(BaseModel):
+    query: str
+    document_id: str
+    evidence: list[EvidenceChunk]
+    message: str | None = None
+
+
+class DraftGenerateRequest(BaseModel):
+    document_id: str
+    draft_type: str = Field(default="case_fact_summary")
+    top_k: int = Field(default=8, ge=1, le=20)
+
+    @field_validator("document_id", "draft_type")
+    @classmethod
+    def require_non_empty_draft_text(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Value must not be empty.")
+        return cleaned
+
+
+class DraftGenerateResponse(BaseModel):
+    draft_id: str
+    document_id: str
+    draft_type: str
+    draft: str
+    evidence: list[EvidenceChunk]
+    model_used: str
+    grounding_note: str
 
 
 class ErrorDetail(BaseModel):

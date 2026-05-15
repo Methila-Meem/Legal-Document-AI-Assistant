@@ -16,6 +16,10 @@ class LlmResponseError(Exception):
     pass
 
 
+class LlmTimeoutError(Exception):
+    pass
+
+
 class GitHubModelsService:
     def __init__(self) -> None:
         self.api_key = settings.github_models_api_key
@@ -78,3 +82,43 @@ class GitHubModelsService:
     def _parse_structured_fields(self, content: str) -> StructuredFields:
         parsed = json.loads(content)
         return StructuredFields.model_validate(parsed)
+
+    async def generate_text(self, *, system_prompt: str, user_prompt: str) -> str:
+        if not self.is_available:
+            raise LlmUnavailableError("GitHub Models API key is not configured.")
+
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "temperature": 0.1,
+        }
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
+        last_error: Exception | None = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                    response = await client.post(self.endpoint, headers=headers, json=payload)
+                    response.raise_for_status()
+                content = response.json()["choices"][0]["message"]["content"]
+                if not isinstance(content, str) or not content.strip():
+                    raise LlmResponseError("GitHub Models returned an empty draft.")
+                return content.strip()
+            except httpx.TimeoutException as exc:
+                last_error = exc
+                if attempt < self.max_retries:
+                    await asyncio.sleep(0.5 * (attempt + 1))
+                    continue
+                raise LlmTimeoutError("GitHub Models request timed out.") from exc
+            except (httpx.HTTPError, KeyError, IndexError, json.JSONDecodeError, LlmResponseError) as exc:
+                last_error = exc
+                if attempt < self.max_retries:
+                    await asyncio.sleep(0.5 * (attempt + 1))
+
+        raise LlmResponseError("GitHub Models draft generation failed.") from last_error

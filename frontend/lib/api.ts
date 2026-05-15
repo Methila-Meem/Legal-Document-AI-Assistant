@@ -61,6 +61,36 @@ export type IndexedDocument = {
   vector_db: string;
 };
 
+export type EvidenceChunk = {
+  chunk_id: string;
+  document_id: string;
+  page_number: number;
+  text: string;
+  relevance_score: number;
+  source: {
+    filename: string;
+    source_type: string;
+    ocr_confidence: number | null;
+  };
+};
+
+export type RetrievalQueryResult = {
+  query: string;
+  document_id: string;
+  evidence: EvidenceChunk[];
+  message: string | null;
+};
+
+export type GeneratedDraft = {
+  draft_id: string;
+  document_id: string;
+  draft_type: "case_fact_summary" | string;
+  draft: string;
+  evidence: EvidenceChunk[];
+  model_used: string;
+  grounding_note: string;
+};
+
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 
 export async function checkBackendHealth(): Promise<HealthStatus> {
@@ -153,4 +183,66 @@ export async function indexDocument(documentId: string): Promise<IndexedDocument
   }
 
   return response.json() as Promise<IndexedDocument>;
+}
+
+export async function queryRetrieval(
+  documentId: string,
+  query: string,
+  topK = 6,
+): Promise<RetrievalQueryResult> {
+  const response = await fetch(`${API_BASE_URL}/api/retrieval/query`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      document_id: documentId,
+      query,
+      top_k: topK,
+    }),
+  });
+
+  if (!response.ok) {
+    let message = `Retrieval failed with status ${response.status}`;
+    try {
+      const payload = await response.json();
+      message = payload?.error?.message ?? payload?.detail ?? message;
+    } catch {
+      // Keep the generic status message when the response is not JSON.
+    }
+    throw new Error(message);
+  }
+
+  return response.json() as Promise<RetrievalQueryResult>;
+}
+
+export async function generateDraft(
+  documentId: string,
+  draftType = "case_fact_summary",
+  topK = 8,
+): Promise<GeneratedDraft> {
+  const response = await fetch(`${API_BASE_URL}/api/drafts/generate`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      document_id: documentId,
+      draft_type: draftType,
+      top_k: topK,
+    }),
+  });
+
+  if (!response.ok) {
+    let message = `Draft generation failed with status ${response.status}`;
+    try {
+      const payload = await response.json();
+      message = payload?.error?.message ?? payload?.detail ?? message;
+    } catch {
+      // Keep the generic status message when the response is not JSON.
+    }
+    throw new Error(message);
+  }
+
+  return response.json() as Promise<GeneratedDraft>;
 }

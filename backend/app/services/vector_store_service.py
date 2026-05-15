@@ -37,6 +37,40 @@ class VectorStoreService:
         except Exception as exc:
             raise VectorStoreError("Unable to write chunks to ChromaDB.") from exc
 
+    def query_document_chunks(
+        self,
+        *,
+        document_id: int,
+        query_embedding: list[float],
+        top_k: int,
+    ) -> list[dict[str, object]]:
+        try:
+            collection = self._get_collection()
+            result = collection.query(
+                query_embeddings=[query_embedding],
+                n_results=top_k,
+                where={"document_id": str(document_id)},
+                include=["documents", "metadatas", "distances"],
+            )
+        except Exception as exc:
+            raise VectorStoreError("Unable to query ChromaDB.") from exc
+
+        documents = result.get("documents") or [[]]
+        metadatas = result.get("metadatas") or [[]]
+        distances = result.get("distances") or [[]]
+        rows: list[dict[str, object]] = []
+        for text, metadata, distance in zip(documents[0], metadatas[0], distances[0]):
+            metadata = metadata or {}
+            rows.append(
+                {
+                    "text": str(text or ""),
+                    "metadata": metadata,
+                    "distance": float(distance),
+                    "relevance_score": self._distance_to_relevance(float(distance)),
+                }
+            )
+        return rows
+
     def _get_collection(self):
         import chromadb
 
@@ -51,3 +85,6 @@ class VectorStoreService:
         if metadata.get("ocr_confidence") is None:
             metadata.pop("ocr_confidence", None)
         return metadata
+
+    def _distance_to_relevance(self, distance: float) -> float:
+        return round(max(0.0, min(1.0, 1.0 - distance)), 4)

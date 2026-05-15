@@ -234,3 +234,63 @@ async def insert_chunks(
             inserted.append(stored)
         await db.commit()
     return inserted
+
+
+async def fetch_active_learning_rules() -> list[dict[str, object]]:
+    async with aiosqlite.connect(settings.sqlite_path) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT id, rule_name, rule_description, rule_type
+            FROM learning_rules
+            WHERE is_active = 1
+            ORDER BY created_at ASC
+            """
+        )
+        rows = await cursor.fetchall()
+
+    return [
+        {
+            "id": row["id"],
+            "rule_name": row["rule_name"],
+            "rule_description": row["rule_description"],
+            "rule_type": row["rule_type"],
+        }
+        for row in rows
+    ]
+
+
+async def insert_draft(
+    *,
+    document_id: int,
+    draft_type: str,
+    content: str,
+    evidence: list[dict[str, object]],
+    model_name: str,
+) -> int:
+    async with aiosqlite.connect(settings.sqlite_path) as db:
+        cursor = await db.execute(
+            """
+            INSERT INTO drafts (
+                document_id,
+                draft_type,
+                content,
+                evidence_json,
+                model_name
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                document_id,
+                draft_type,
+                content,
+                json.dumps(evidence),
+                model_name,
+            ),
+        )
+        await db.commit()
+        draft_id = cursor.lastrowid
+
+    if draft_id is None:
+        raise RuntimeError("Draft insert did not return an id.")
+    return draft_id

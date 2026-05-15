@@ -43,7 +43,7 @@ router = APIRouter(prefix="/documents", tags=["documents"])
 )
 async def documents_placeholder() -> DocumentPlaceholderResponse:
     return DocumentPlaceholderResponse(
-        message="Document upload and processing will be implemented in a later phase."
+        message="Document listing will be implemented in a later phase."
     )
 
 

@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.core.errors import register_exception_handlers
 from app.db.database import initialize_database
-from app.routers import documents, health
+from app.routers import documents, drafts, health, retrieval
 from app.services.storage_service import ensure_storage_directories
 
 
@@ -36,6 +36,8 @@ register_exception_handlers(app)
 
 app.include_router(health.router, prefix=settings.api_prefix)
 app.include_router(documents.router, prefix=settings.api_prefix)
+app.include_router(retrieval.router, prefix=settings.api_prefix)
+app.include_router(drafts.router, prefix=settings.api_prefix)
 
 
 @app.get("/")

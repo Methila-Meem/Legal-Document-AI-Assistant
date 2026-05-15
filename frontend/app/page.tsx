@@ -5,36 +5,21 @@ import { DocumentUpload } from "@/components/DocumentUpload";
 import {
   checkBackendHealth,
   extractStructuredFields,
+  generateDraft,
   indexDocument,
   processDocument,
+  queryRetrieval,
+  type EvidenceChunk,
+  type GeneratedDraft,
   type HealthStatus,
   type IndexedDocument,
   type ProcessedDocument,
+  type RetrievalQueryResult,
   type StructuredExtraction,
   type UploadedDocument,
 } from "@/lib/api";
 
-const panels = [
-  {
-    title: "Upload",
-    subtitle: "Upload section placeholder",
-    body: "Document intake will appear here in the next phase.",
-  },
-  {
-    title: "Processing",
-    subtitle: "Document processing status placeholder",
-    body: "OCR and extraction status will be shown here.",
-  },
-  {
-    title: "Draft",
-    subtitle: "Draft output placeholder",
-    body: "Grounded draft output will be editable here.",
-  },
-  {
-    title: "Evidence",
-    subtitle: "Evidence panel placeholder",
-    body: "Retrieved chunks and citations will be listed here.",
-  },
+const secondaryPanels = [
   {
     title: "Rules",
     subtitle: "Learned rules placeholder",
@@ -55,6 +40,16 @@ export default function DashboardPage() {
   const [indexedDocument, setIndexedDocument] = useState<IndexedDocument | null>(null);
   const [indexingError, setIndexingError] = useState<string | null>(null);
   const [isIndexing, setIsIndexing] = useState(false);
+  const [retrievalQuery, setRetrievalQuery] = useState(
+    "Generate a case fact summary from this document.",
+  );
+  const [retrievalResult, setRetrievalResult] = useState<RetrievalQueryResult | null>(null);
+  const [retrievalError, setRetrievalError] = useState<string | null>(null);
+  const [isRetrieving, setIsRetrieving] = useState(false);
+  const [generatedDraft, setGeneratedDraft] = useState<GeneratedDraft | null>(null);
+  const [draftText, setDraftText] = useState("");
+  const [draftError, setDraftError] = useState<string | null>(null);
+  const [isGeneratingDraft, setIsGeneratingDraft] = useState(false);
 
   useEffect(() => {
     checkBackendHealth()
@@ -102,6 +97,11 @@ export default function DashboardPage() {
                 setFieldExtractionError(null);
                 setIndexedDocument(null);
                 setIndexingError(null);
+                setRetrievalResult(null);
+                setRetrievalError(null);
+                setGeneratedDraft(null);
+                setDraftText("");
+                setDraftError(null);
               }}
             />
           </DashboardPanel>
@@ -125,6 +125,11 @@ export default function DashboardPage() {
                   setFieldExtractionError(null);
                   setIndexedDocument(null);
                   setIndexingError(null);
+                  setRetrievalResult(null);
+                  setRetrievalError(null);
+                  setGeneratedDraft(null);
+                  setDraftText("");
+                  setDraftError(null);
                 } catch (error) {
                   setProcessingError(
                     error instanceof Error ? error.message : "Document processing failed.",
@@ -135,10 +140,33 @@ export default function DashboardPage() {
               }}
             />
           </DashboardPanel>
-          <DashboardPanel title="Draft" subtitle="Draft output placeholder">
-            <div className="min-h-28 rounded-md border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-600">
-              Grounded draft output will be editable here.
-            </div>
+          <DashboardPanel title="Draft" subtitle="Grounded case fact summary">
+            <DraftPanel
+              indexedDocument={indexedDocument}
+              generatedDraft={generatedDraft}
+              draftText={draftText}
+              error={draftError}
+              isGenerating={isGeneratingDraft}
+              onDraftChange={setDraftText}
+              onGenerate={async () => {
+                if (!indexedDocument) {
+                  return;
+                }
+                setIsGeneratingDraft(true);
+                setDraftError(null);
+                try {
+                  const result = await generateDraft(indexedDocument.document_id);
+                  setGeneratedDraft(result);
+                  setDraftText(result.draft);
+                } catch (error) {
+                  setDraftError(
+                    error instanceof Error ? error.message : "Draft generation failed.",
+                  );
+                } finally {
+                  setIsGeneratingDraft(false);
+                }
+              }}
+            />
           </DashboardPanel>
         </div>
         <aside className="grid gap-4">
@@ -182,6 +210,11 @@ export default function DashboardPage() {
                 try {
                   const result = await indexDocument(processedDocument.document_id);
                   setIndexedDocument(result);
+                  setRetrievalResult(null);
+                  setRetrievalError(null);
+                  setGeneratedDraft(null);
+                  setDraftText("");
+                  setDraftError(null);
                 } catch (error) {
                   setIndexingError(error instanceof Error ? error.message : "Indexing failed.");
                 } finally {
@@ -190,7 +223,38 @@ export default function DashboardPage() {
               }}
             />
           </DashboardPanel>
-          {panels.slice(3).map((panel) => (
+          <DashboardPanel title="Retrieval Test" subtitle="Query indexed evidence">
+            <RetrievalQueryPanel
+              indexedDocument={indexedDocument}
+              query={retrievalQuery}
+              error={retrievalError}
+              isRetrieving={isRetrieving}
+              onQueryChange={setRetrievalQuery}
+              onRetrieve={async () => {
+                if (!indexedDocument) {
+                  return;
+                }
+                setIsRetrieving(true);
+                setRetrievalError(null);
+                try {
+                  const result = await queryRetrieval(indexedDocument.document_id, retrievalQuery, 6);
+                  setRetrievalResult(result);
+                } catch (error) {
+                  setRetrievalError(error instanceof Error ? error.message : "Retrieval failed.");
+                } finally {
+                  setIsRetrieving(false);
+                }
+              }}
+            />
+          </DashboardPanel>
+          <DashboardPanel title="Evidence" subtitle="Retrieved document evidence">
+            <EvidencePanel
+              evidence={generatedDraft?.evidence ?? retrievalResult?.evidence ?? null}
+              message={retrievalResult?.message ?? null}
+              heading={generatedDraft ? "Evidence used for draft" : "Retrieved evidence"}
+            />
+          </DashboardPanel>
+          {secondaryPanels.map((panel) => (
             <DashboardPanel key={panel.title} {...panel} />
           ))}
           <section className="rounded-md border border-slate-200 bg-white p-5">
@@ -335,7 +399,7 @@ function DashboardPanel({
           <p className="mt-1 text-sm font-medium text-slate-500">{subtitle}</p>
         </div>
         <span className="rounded-md bg-slate-100 px-2 py-1 text-xs font-medium text-slate-600">
-          Phase 3
+          Phase 7
         </span>
       </div>
       <div className="mt-4">
@@ -346,6 +410,185 @@ function DashboardPanel({
         )}
       </div>
     </section>
+  );
+}
+
+function DraftPanel({
+  indexedDocument,
+  generatedDraft,
+  draftText,
+  error,
+  isGenerating,
+  onDraftChange,
+  onGenerate,
+}: {
+  indexedDocument: IndexedDocument | null;
+  generatedDraft: GeneratedDraft | null;
+  draftText: string;
+  error: string | null;
+  isGenerating: boolean;
+  onDraftChange: (value: string) => void;
+  onGenerate: () => void;
+}) {
+  if (!indexedDocument) {
+    return (
+      <div className="min-h-28 rounded-md border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-600">
+        Index a processed document to enable grounded draft generation.
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4 rounded-md border border-slate-200 bg-slate-50 p-4 text-sm">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <p className="font-medium text-slate-900">Case fact summary</p>
+          <p className="text-slate-600">
+            {generatedDraft ? `Model: ${generatedDraft.model_used}` : "Ready to generate from evidence."}
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={onGenerate}
+          disabled={isGenerating}
+          className="rounded-md bg-slate-950 px-3 py-2 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400"
+        >
+          {isGenerating ? "Generating..." : "Generate Draft"}
+        </button>
+      </div>
+
+      <p className="rounded-md border border-amber-200 bg-amber-50 p-3 text-amber-800">
+        This draft is generated only from retrieved evidence and may require human review.
+      </p>
+
+      {error ? (
+        <p className="rounded-md border border-red-200 bg-red-50 p-3 text-red-700">{error}</p>
+      ) : null}
+
+      {generatedDraft ? (
+        <div className="space-y-3">
+          <p className="text-slate-600">{generatedDraft.grounding_note}</p>
+          <textarea
+            value={draftText}
+            onChange={(event) => onDraftChange(event.target.value)}
+            rows={18}
+            className="w-full resize-y rounded-md border border-slate-300 bg-white px-3 py-2 font-mono text-sm text-slate-900 outline-none transition focus:border-slate-500"
+          />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function RetrievalQueryPanel({
+  indexedDocument,
+  query,
+  error,
+  isRetrieving,
+  onQueryChange,
+  onRetrieve,
+}: {
+  indexedDocument: IndexedDocument | null;
+  query: string;
+  error: string | null;
+  isRetrieving: boolean;
+  onQueryChange: (value: string) => void;
+  onRetrieve: () => void;
+}) {
+  if (!indexedDocument) {
+    return (
+      <div className="min-h-28 rounded-md border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-600">
+        Index a processed document to test evidence retrieval.
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4 rounded-md border border-slate-200 bg-slate-50 p-4 text-sm">
+      <label className="block">
+        <span className="font-medium text-slate-900">Retrieval query</span>
+        <textarea
+          value={query}
+          onChange={(event) => onQueryChange(event.target.value)}
+          rows={3}
+          className="mt-2 w-full resize-none rounded-md border border-slate-300 bg-white px-3 py-2 text-slate-900 outline-none transition focus:border-slate-500"
+        />
+      </label>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <p className="text-slate-600">Top 6 chunks from document {indexedDocument.document_id}</p>
+        <button
+          type="button"
+          onClick={onRetrieve}
+          disabled={isRetrieving || !query.trim()}
+          className="rounded-md bg-slate-950 px-3 py-2 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400"
+        >
+          {isRetrieving ? "Retrieving..." : "Retrieve Evidence"}
+        </button>
+      </div>
+      {error ? (
+        <p className="rounded-md border border-red-200 bg-red-50 p-3 text-red-700">{error}</p>
+      ) : null}
+    </div>
+  );
+}
+
+function EvidencePanel({
+  evidence,
+  message,
+  heading,
+}: {
+  evidence: EvidenceChunk[] | null;
+  message: string | null;
+  heading: string;
+}) {
+  if (!evidence) {
+    return (
+      <div className="min-h-28 rounded-md border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-600">
+        Retrieved chunks and source details will appear here after a retrieval query.
+      </div>
+    );
+  }
+
+  if (!evidence.length) {
+    return (
+      <div className="rounded-md border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+        {message ?? "No evidence found for this query."}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3 text-sm">
+      <p className="font-medium text-slate-900">{heading}</p>
+      {evidence.map((chunk) => (
+        <EvidenceCard key={chunk.chunk_id || `${chunk.page_number}-${chunk.text}`} chunk={chunk} />
+      ))}
+    </div>
+  );
+}
+
+function EvidenceCard({ chunk }: { chunk: EvidenceChunk }) {
+  return (
+    <article className="rounded-md border border-slate-200 bg-slate-50 p-4">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <p className="font-medium text-slate-900">Page {chunk.page_number}</p>
+          <p className="text-slate-600">{chunk.source.filename || "Unknown file"}</p>
+        </div>
+        <p className="rounded-md bg-white px-2 py-1 text-xs font-medium text-slate-700">
+          Score {chunk.relevance_score.toFixed(2)}
+        </p>
+      </div>
+      <p className="mt-2 text-xs uppercase text-slate-500">
+        {chunk.source.source_type || "unknown source"}
+        {chunk.source.ocr_confidence === null
+          ? ""
+          : ` | OCR ${(chunk.source.ocr_confidence * 100).toFixed(0)}%`}
+      </p>
+      <p className="mt-3 line-clamp-6 whitespace-pre-wrap text-slate-700">
+        {chunk.text || "No chunk text returned."}
+      </p>
+    </article>
   );
 }
 
