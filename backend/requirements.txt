@@ -1,0 +1,16 @@
+fastapi
+uvicorn[standard]
+pydantic
+pydantic-settings
+python-multipart
+aiosqlite
+pytest
+httpx
+PyMuPDF
+paddleocr
+paddlepaddle
+opencv-python-headless
+Pillow
+numpy
+sentence-transformers
+chromadb
