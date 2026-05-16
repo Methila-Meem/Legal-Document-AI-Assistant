@@ -10,6 +10,7 @@ class TextChunk:
     page_number: int
     source_type: str | None
     ocr_confidence: float | None
+    ocr_engine: str | None
 
 
 class ChunkingService:
@@ -40,6 +41,11 @@ class ChunkingService:
                         ocr_confidence=(
                             float(page["ocr_confidence"])
                             if page.get("ocr_confidence") is not None
+                            else None
+                        ),
+                        ocr_engine=(
+                            str(page["ocr_engine"])
+                            if page.get("ocr_engine") is not None
                             else None
                         ),
                     )

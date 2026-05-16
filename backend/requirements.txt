@@ -7,10 +7,12 @@ aiosqlite
 pytest
 httpx
 PyMuPDF
-paddleocr
-paddlepaddle
+easyocr
+torch
+torchvision
 opencv-python-headless
 Pillow
 numpy
+pytesseract
 sentence-transformers
 chromadb

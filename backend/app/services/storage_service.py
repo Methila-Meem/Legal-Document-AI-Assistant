@@ -11,7 +11,7 @@ REQUIRED_STORAGE_FOLDERS = ("uploads", "processed", "outputs", "chroma")
 
 
 def ensure_storage_directories() -> None:
-    base_path = Path(settings.storage_dir)
+    base_path = settings.resolved_storage_dir
     for folder in REQUIRED_STORAGE_FOLDERS:
         (base_path / folder).mkdir(parents=True, exist_ok=True)
 
@@ -52,7 +52,7 @@ async def save_upload_file(upload_file: UploadFile) -> StoredUpload:
 
     file_type = get_extension(original_filename)
     stored_filename = f"{uuid4().hex}.{file_type}"
-    upload_dir = Path(settings.storage_dir) / "uploads"
+    upload_dir = settings.resolved_storage_dir / "uploads"
     destination = upload_dir / stored_filename
 
     size_bytes = 0

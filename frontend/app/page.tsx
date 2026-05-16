@@ -1,55 +1,146 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { DocumentUpload } from "@/components/DocumentUpload";
 import {
   checkBackendHealth,
   extractStructuredFields,
   generateDraft,
+  getLearningRules,
   indexDocument,
   processDocument,
   queryRetrieval,
+  saveOperatorEdit,
+  updateLearningRule,
+  type DraftEditResult,
   type EvidenceChunk,
   type GeneratedDraft,
   type HealthStatus,
   type IndexedDocument,
+  type LearnedRule,
   type ProcessedDocument,
   type RetrievalQueryResult,
   type StructuredExtraction,
   type UploadedDocument,
 } from "@/lib/api";
 
-const secondaryPanels = [
-  {
-    title: "Rules",
-    subtitle: "Learned rules placeholder",
-    body: "Reusable operator improvement rules will be managed here.",
-  },
-];
+type MessageTone = "info" | "success" | "error" | "warning";
+
+type AppMessage = {
+  tone: MessageTone;
+  title: string;
+  body: string;
+};
+
+type WorkflowStep = {
+  number: number;
+  label: string;
+  complete: boolean;
+  active: boolean;
+};
 
 export default function DashboardPage() {
   const [health, setHealth] = useState<HealthStatus | null>(null);
   const [healthError, setHealthError] = useState<string | null>(null);
+  const [appMessage, setAppMessage] = useState<AppMessage>({
+    tone: "info",
+    title: "Ready",
+    body: "Start by uploading a PDF, image, or TXT document.",
+  });
   const [uploadedDocument, setUploadedDocument] = useState<UploadedDocument | null>(null);
   const [processedDocument, setProcessedDocument] = useState<ProcessedDocument | null>(null);
-  const [processingError, setProcessingError] = useState<string | null>(null);
-  const [isProcessing, setIsProcessing] = useState(false);
   const [structuredExtraction, setStructuredExtraction] = useState<StructuredExtraction | null>(null);
-  const [fieldExtractionError, setFieldExtractionError] = useState<string | null>(null);
-  const [isExtractingFields, setIsExtractingFields] = useState(false);
   const [indexedDocument, setIndexedDocument] = useState<IndexedDocument | null>(null);
-  const [indexingError, setIndexingError] = useState<string | null>(null);
-  const [isIndexing, setIsIndexing] = useState(false);
   const [retrievalQuery, setRetrievalQuery] = useState(
     "Generate a case fact summary from this document.",
   );
   const [retrievalResult, setRetrievalResult] = useState<RetrievalQueryResult | null>(null);
-  const [retrievalError, setRetrievalError] = useState<string | null>(null);
-  const [isRetrieving, setIsRetrieving] = useState(false);
   const [generatedDraft, setGeneratedDraft] = useState<GeneratedDraft | null>(null);
+  const [previousDraft, setPreviousDraft] = useState<GeneratedDraft | null>(null);
   const [draftText, setDraftText] = useState("");
-  const [draftError, setDraftError] = useState<string | null>(null);
-  const [isGeneratingDraft, setIsGeneratingDraft] = useState(false);
+  const [editResult, setEditResult] = useState<DraftEditResult | null>(null);
+  const [learningRules, setLearningRules] = useState<LearnedRule[]>([]);
+  const [loadingAction, setLoadingAction] = useState<string | null>(null);
+  const [updatingRuleId, setUpdatingRuleId] = useState<string | null>(null);
+
+  const draftEdited = Boolean(generatedDraft && draftText !== generatedDraft.draft);
+  const hasActiveRules = learningRules.some((rule) => rule.is_active);
+  const improvedDraftGenerated = Boolean(
+    previousDraft && generatedDraft && (generatedDraft.applied_learning_rules ?? []).length > 0,
+  );
+
+  const workflowSteps = useMemo<WorkflowStep[]>(
+    () => [
+      { number: 1, label: "Upload Document", complete: Boolean(uploadedDocument), active: !uploadedDocument },
+      {
+        number: 2,
+        label: "Process Document",
+        complete: Boolean(processedDocument),
+        active: Boolean(uploadedDocument && !processedDocument),
+      },
+      {
+        number: 3,
+        label: "Extract Structured Fields",
+        complete: Boolean(structuredExtraction),
+        active: Boolean(processedDocument && !structuredExtraction),
+      },
+      {
+        number: 4,
+        label: "Index for Retrieval",
+        complete: Boolean(indexedDocument),
+        active: Boolean(processedDocument && !indexedDocument),
+      },
+      {
+        number: 5,
+        label: "Retrieve Evidence",
+        complete: Boolean(retrievalResult),
+        active: Boolean(indexedDocument && !retrievalResult),
+      },
+      {
+        number: 6,
+        label: "Generate Grounded Draft",
+        complete: Boolean(generatedDraft),
+        active: Boolean(indexedDocument && !generatedDraft),
+      },
+      {
+        number: 7,
+        label: "Edit Draft",
+        complete: draftEdited,
+        active: Boolean(generatedDraft && !draftEdited),
+      },
+      {
+        number: 8,
+        label: "Save Operator Edit",
+        complete: Boolean(editResult),
+        active: Boolean(draftEdited && !editResult),
+      },
+      {
+        number: 9,
+        label: "View Learned Rules",
+        complete: learningRules.length > 0,
+        active: Boolean(editResult && learningRules.length === 0),
+      },
+      {
+        number: 10,
+        label: "Generate Improved Draft",
+        complete: improvedDraftGenerated,
+        active: Boolean(hasActiveRules && generatedDraft && !improvedDraftGenerated),
+      },
+    ],
+    [
+      draftEdited,
+      editResult,
+      generatedDraft,
+      hasActiveRules,
+      improvedDraftGenerated,
+      indexedDocument,
+      learningRules.length,
+      processedDocument,
+      retrievalResult,
+      structuredExtraction,
+      uploadedDocument,
+    ],
+  );
 
   useEffect(() => {
     checkBackendHealth()
@@ -63,283 +154,556 @@ export default function DashboardPage() {
       });
   }, []);
 
+  useEffect(() => {
+    void refreshLearningRules();
+  }, []);
+
+  async function refreshLearningRules() {
+    try {
+      const rules = await getLearningRules();
+      setLearningRules(rules);
+    } catch (error) {
+      setAppMessage({
+        tone: "warning",
+        title: "Learned rules unavailable",
+        body: getErrorMessage(error, "Unable to load learned rules."),
+      });
+    }
+  }
+
+  function resetAfterUpload(document: UploadedDocument) {
+    setUploadedDocument(document);
+    setProcessedDocument(null);
+    setStructuredExtraction(null);
+    setIndexedDocument(null);
+    setRetrievalResult(null);
+    setGeneratedDraft(null);
+    setPreviousDraft(null);
+    setDraftText("");
+    setEditResult(null);
+    setAppMessage({
+      tone: "success",
+      title: "Document uploaded",
+      body: `${document.original_filename} is ready for processing.`,
+    });
+  }
+
+  async function runAction(action: string, work: () => Promise<void>) {
+    setLoadingAction(action);
+    try {
+      await work();
+    } catch (error) {
+      setAppMessage({
+        tone: "error",
+        title: "Action failed",
+        body: getErrorMessage(error, "The request could not be completed."),
+      });
+    } finally {
+      setLoadingAction(null);
+    }
+  }
+
+  const handleProcess = () =>
+    runAction("process", async () => {
+      if (!uploadedDocument) {
+        return;
+      }
+      const result = await processDocument(uploadedDocument.document_id);
+      setProcessedDocument(result);
+      setStructuredExtraction(null);
+      setIndexedDocument(null);
+      setRetrievalResult(null);
+      setGeneratedDraft(null);
+      setPreviousDraft(null);
+      setDraftText("");
+      setEditResult(null);
+      setAppMessage({
+        tone: "success",
+        title: "Document processed",
+        body: `${result.page_count} page${result.page_count === 1 ? "" : "s"} extracted.`,
+      });
+    });
+
+  const handleExtract = () =>
+    runAction("extract", async () => {
+      if (!processedDocument) {
+        return;
+      }
+      const result = await extractStructuredFields(processedDocument.document_id);
+      setStructuredExtraction(result);
+      setAppMessage({
+        tone: "success",
+        title: "Structured fields extracted",
+        body: `Extraction method: ${result.method}.`,
+      });
+    });
+
+  const handleIndex = () =>
+    runAction("index", async () => {
+      if (!processedDocument) {
+        return;
+      }
+      const result = await indexDocument(processedDocument.document_id);
+      setIndexedDocument(result);
+      setRetrievalResult(null);
+      setGeneratedDraft(null);
+      setPreviousDraft(null);
+      setDraftText("");
+      setEditResult(null);
+      setAppMessage({
+        tone: "success",
+        title: "Document indexed",
+        body: `${result.chunk_count} chunks are ready in ${result.vector_db}.`,
+      });
+    });
+
+  const handleRetrieve = () =>
+    runAction("retrieve", async () => {
+      if (!indexedDocument) {
+        return;
+      }
+      const result = await queryRetrieval(indexedDocument.document_id, retrievalQuery, 6);
+      setRetrievalResult(result);
+      setAppMessage({
+        tone: result.evidence.length ? "success" : "warning",
+        title: result.evidence.length ? "Evidence retrieved" : "No evidence found",
+        body: result.evidence.length
+          ? `${result.evidence.length} evidence chunk${result.evidence.length === 1 ? "" : "s"} returned.`
+          : result.message ?? "Try a more specific retrieval query.",
+      });
+    });
+
+  const handleGenerate = () =>
+    runAction("generate", async () => {
+      if (!indexedDocument) {
+        return;
+      }
+      const previous = generatedDraft;
+      const result = await generateDraft(indexedDocument.document_id);
+      const changedFromPrevious = previous
+        ? normalizeDraftText(previous.draft) !== normalizeDraftText(result.draft)
+        : null;
+      setPreviousDraft(previous);
+      setGeneratedDraft(result);
+      setDraftText(result.draft);
+      setEditResult(null);
+      setAppMessage({
+        tone: changedFromPrevious === false ? "warning" : "success",
+        title:
+          changedFromPrevious === false
+            ? "Rules were sent, but draft text did not change"
+            : (result.applied_learning_rules ?? []).length
+              ? "Improved draft generated"
+              : "Draft generated",
+        body:
+          changedFromPrevious === false
+            ? "The active learned rules were included in the model request, but the returned draft matched the previous draft."
+            : (result.applied_learning_rules ?? []).length
+              ? "This draft request included active operator-learned rules."
+              : "Grounded draft generated from retrieved evidence.",
+      });
+    });
+
+  const handleSaveEdit = () =>
+    runAction("save-edit", async () => {
+      if (!generatedDraft) {
+        return;
+      }
+      const result = await saveOperatorEdit(generatedDraft.draft_id, draftText);
+      setEditResult(result);
+      await refreshLearningRules();
+      setAppMessage({
+        tone: result.warning ? "warning" : "success",
+        title: "Operator edit saved",
+        body: result.warning ?? result.message,
+      });
+    });
+
+  const handleToggleRule = async (rule: LearnedRule) => {
+    setUpdatingRuleId(rule.rule_id);
+    try {
+      const updated = await updateLearningRule(rule.rule_id, !rule.is_active);
+      setLearningRules((current) =>
+        current.map((item) => (item.rule_id === updated.rule_id ? updated : item)),
+      );
+      setAppMessage({
+        tone: "success",
+        title: updated.is_active ? "Rule enabled" : "Rule disabled",
+        body: "Future draft generation will respect the updated active rule set.",
+      });
+    } catch (error) {
+      setAppMessage({
+        tone: "error",
+        title: "Rule update failed",
+        body: getErrorMessage(error, "Unable to update learned rule."),
+      });
+    } finally {
+      setUpdatingRuleId(null);
+    }
+  };
+
   return (
-    <main className="min-h-screen">
+    <main className="min-h-screen bg-slate-100">
       <header className="border-b border-slate-200 bg-white">
         <div className="mx-auto flex max-w-7xl flex-col gap-4 px-6 py-5 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <p className="text-sm font-medium text-slate-500">AI Engineer Assessment</p>
             <h1 className="text-2xl font-semibold text-slate-950">Legal Document AI Assistant</h1>
           </div>
-          <div className="flex items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm">
-            <span
-              className={`h-2.5 w-2.5 rounded-full ${
-                health?.status === "ok" ? "bg-emerald-500" : "bg-amber-500"
-              }`}
-              aria-hidden="true"
-            />
-            <span className="font-medium text-slate-700">
-              {health?.status === "ok" ? "Backend online" : "Backend pending"}
-            </span>
-          </div>
+          <BackendStatus health={health} error={healthError} />
         </div>
       </header>
 
-      <section className="mx-auto grid max-w-7xl gap-4 px-6 py-6 lg:grid-cols-[1.1fr_0.9fr]">
-        <div className="grid gap-4">
-          <DashboardPanel title="Upload" subtitle="Upload legal-style source document">
-            <DocumentUpload
-              onUploaded={(document) => {
-                setUploadedDocument(document);
-                setProcessedDocument(null);
-                setProcessingError(null);
-                setStructuredExtraction(null);
-                setFieldExtractionError(null);
-                setIndexedDocument(null);
-                setIndexingError(null);
-                setRetrievalResult(null);
-                setRetrievalError(null);
-                setGeneratedDraft(null);
-                setDraftText("");
-                setDraftError(null);
-              }}
-            />
-          </DashboardPanel>
-          <DashboardPanel title="Processing" subtitle="Document processing status placeholder">
-            <ProcessingPanel
-              uploadedDocument={uploadedDocument}
-              processedDocument={processedDocument}
-              processingError={processingError}
-              isProcessing={isProcessing}
-              onProcess={async () => {
-                if (!uploadedDocument) {
-                  return;
-                }
-                setIsProcessing(true);
-                setProcessingError(null);
-                setProcessedDocument(null);
-                try {
-                  const result = await processDocument(uploadedDocument.document_id);
-                  setProcessedDocument(result);
-                  setStructuredExtraction(null);
-                  setFieldExtractionError(null);
-                  setIndexedDocument(null);
-                  setIndexingError(null);
-                  setRetrievalResult(null);
-                  setRetrievalError(null);
-                  setGeneratedDraft(null);
-                  setDraftText("");
-                  setDraftError(null);
-                } catch (error) {
-                  setProcessingError(
-                    error instanceof Error ? error.message : "Document processing failed.",
-                  );
-                } finally {
-                  setIsProcessing(false);
-                }
-              }}
-            />
-          </DashboardPanel>
-          <DashboardPanel title="Draft" subtitle="Grounded case fact summary">
-            <DraftPanel
+      <section className="mx-auto grid max-w-7xl gap-5 px-6 py-6 xl:grid-cols-[280px_minmax(0,1fr)]">
+        <aside className="space-y-4">
+          <WorkflowTracker steps={workflowSteps} />
+          <MessageArea message={appMessage} />
+          <SystemSnapshot
+            uploadedDocument={uploadedDocument}
+            processedDocument={processedDocument}
+            indexedDocument={indexedDocument}
+            generatedDraft={generatedDraft}
+            learningRules={learningRules}
+          />
+        </aside>
+
+        <div className="grid gap-5">
+          <section className="grid gap-5 lg:grid-cols-2">
+            <DashboardPanel step="1" title="Upload Document" subtitle="PDF, image, or TXT source">
+              <DocumentUpload onUploaded={resetAfterUpload} />
+            </DashboardPanel>
+
+            <DashboardPanel step="2" title="Process Document" subtitle="Extract page text and OCR signals">
+              <ActionPanel
+                ready={Boolean(uploadedDocument)}
+                complete={Boolean(processedDocument)}
+                emptyText="Upload a document to enable processing."
+                buttonText="Process Document"
+                loadingText="Processing..."
+                isLoading={loadingAction === "process"}
+                onClick={handleProcess}
+              >
+                {processedDocument ? <ProcessedSummary processedDocument={processedDocument} /> : null}
+              </ActionPanel>
+            </DashboardPanel>
+          </section>
+
+          <section className="grid gap-5 lg:grid-cols-2">
+            <DashboardPanel step="3" title="Extract Structured Fields" subtitle="Parties, dates, money, and key events">
+              <StructuredFieldsPanel
+                processedDocument={processedDocument}
+                structuredExtraction={structuredExtraction}
+                isLoading={loadingAction === "extract"}
+                onExtract={handleExtract}
+              />
+            </DashboardPanel>
+
+            <DashboardPanel step="4" title="Index for Retrieval" subtitle="Create chunks and vectors">
+              <IndexPanel
+                processedDocument={processedDocument}
+                indexedDocument={indexedDocument}
+                isLoading={loadingAction === "index"}
+                onIndex={handleIndex}
+              />
+            </DashboardPanel>
+          </section>
+
+          <section className="grid gap-5 lg:grid-cols-[0.9fr_1.1fr]">
+            <DashboardPanel step="5" title="Retrieve Evidence" subtitle="Inspect source chunks before drafting">
+              <RetrievalPanel
+                indexedDocument={indexedDocument}
+                query={retrievalQuery}
+                result={retrievalResult}
+                isLoading={loadingAction === "retrieve"}
+                onQueryChange={setRetrievalQuery}
+                onRetrieve={handleRetrieve}
+              />
+            </DashboardPanel>
+
+            <DashboardPanel title="Evidence Panel" subtitle="Filename, page, score, and preview">
+              <EvidencePanel
+                evidence={generatedDraft?.evidence ?? retrievalResult?.evidence ?? null}
+                message={retrievalResult?.message ?? null}
+              />
+            </DashboardPanel>
+          </section>
+
+          <DashboardPanel step="6" title="Generate Grounded Draft" subtitle="Draft from retrieved document evidence">
+            <DraftEditorPanel
               indexedDocument={indexedDocument}
               generatedDraft={generatedDraft}
+              previousDraft={previousDraft}
               draftText={draftText}
-              error={draftError}
-              isGenerating={isGeneratingDraft}
+              isGenerating={loadingAction === "generate"}
+              isSavingEdit={loadingAction === "save-edit"}
+              hasActiveRules={hasActiveRules}
+              onGenerate={handleGenerate}
               onDraftChange={setDraftText}
-              onGenerate={async () => {
-                if (!indexedDocument) {
-                  return;
-                }
-                setIsGeneratingDraft(true);
-                setDraftError(null);
-                try {
-                  const result = await generateDraft(indexedDocument.document_id);
-                  setGeneratedDraft(result);
-                  setDraftText(result.draft);
-                } catch (error) {
-                  setDraftError(
-                    error instanceof Error ? error.message : "Draft generation failed.",
-                  );
-                } finally {
-                  setIsGeneratingDraft(false);
-                }
-              }}
+              onSaveEdit={handleSaveEdit}
+              editResult={editResult}
+            />
+          </DashboardPanel>
+
+          <DashboardPanel step="9" title="Learned Rules" subtitle="Operator preferences used for improved drafts">
+            <LearnedRulesPanel
+              rules={learningRules}
+              updatingRuleId={updatingRuleId}
+              onToggleRule={handleToggleRule}
             />
           </DashboardPanel>
         </div>
-        <aside className="grid gap-4">
-          <DashboardPanel title="Structured Fields" subtitle="Extracted legal metadata">
-            <StructuredFieldsPanel
-              processedDocument={processedDocument}
-              structuredExtraction={structuredExtraction}
-              error={fieldExtractionError}
-              isExtracting={isExtractingFields}
-              onExtract={async () => {
-                if (!processedDocument) {
-                  return;
-                }
-                setIsExtractingFields(true);
-                setFieldExtractionError(null);
-                try {
-                  const result = await extractStructuredFields(processedDocument.document_id);
-                  setStructuredExtraction(result);
-                } catch (error) {
-                  setFieldExtractionError(
-                    error instanceof Error ? error.message : "Field extraction failed.",
-                  );
-                } finally {
-                  setIsExtractingFields(false);
-                }
-              }}
-            />
-          </DashboardPanel>
-          <DashboardPanel title="Retrieval Index" subtitle="Chunk and vector status">
-            <IndexPanel
-              processedDocument={processedDocument}
-              indexedDocument={indexedDocument}
-              error={indexingError}
-              isIndexing={isIndexing}
-              onIndex={async () => {
-                if (!processedDocument) {
-                  return;
-                }
-                setIsIndexing(true);
-                setIndexingError(null);
-                try {
-                  const result = await indexDocument(processedDocument.document_id);
-                  setIndexedDocument(result);
-                  setRetrievalResult(null);
-                  setRetrievalError(null);
-                  setGeneratedDraft(null);
-                  setDraftText("");
-                  setDraftError(null);
-                } catch (error) {
-                  setIndexingError(error instanceof Error ? error.message : "Indexing failed.");
-                } finally {
-                  setIsIndexing(false);
-                }
-              }}
-            />
-          </DashboardPanel>
-          <DashboardPanel title="Retrieval Test" subtitle="Query indexed evidence">
-            <RetrievalQueryPanel
-              indexedDocument={indexedDocument}
-              query={retrievalQuery}
-              error={retrievalError}
-              isRetrieving={isRetrieving}
-              onQueryChange={setRetrievalQuery}
-              onRetrieve={async () => {
-                if (!indexedDocument) {
-                  return;
-                }
-                setIsRetrieving(true);
-                setRetrievalError(null);
-                try {
-                  const result = await queryRetrieval(indexedDocument.document_id, retrievalQuery, 6);
-                  setRetrievalResult(result);
-                } catch (error) {
-                  setRetrievalError(error instanceof Error ? error.message : "Retrieval failed.");
-                } finally {
-                  setIsRetrieving(false);
-                }
-              }}
-            />
-          </DashboardPanel>
-          <DashboardPanel title="Evidence" subtitle="Retrieved document evidence">
-            <EvidencePanel
-              evidence={generatedDraft?.evidence ?? retrievalResult?.evidence ?? null}
-              message={retrievalResult?.message ?? null}
-              heading={generatedDraft ? "Evidence used for draft" : "Retrieved evidence"}
-            />
-          </DashboardPanel>
-          {secondaryPanels.map((panel) => (
-            <DashboardPanel key={panel.title} {...panel} />
-          ))}
-          <section className="rounded-md border border-slate-200 bg-white p-5">
-            <h2 className="text-base font-semibold text-slate-950">Backend Health</h2>
-            <p className="mt-2 text-sm text-slate-600">
-              {health
-                ? `${health.service} ${health.version} responded with status ${health.status}.`
-                : healthError ?? "Checking backend health..."}
-            </p>
-          </section>
-        </aside>
       </section>
     </main>
+  );
+}
+
+function BackendStatus({ health, error }: { health: HealthStatus | null; error: string | null }) {
+  const isOnline = health?.status === "ok";
+  return (
+    <div className="flex items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm">
+      <span
+        className={`h-2.5 w-2.5 rounded-full ${isOnline ? "bg-emerald-500" : "bg-amber-500"}`}
+        aria-hidden="true"
+      />
+      <span className="font-medium text-slate-700">
+        {isOnline ? "Backend online" : error ?? "Backend pending"}
+      </span>
+    </div>
+  );
+}
+
+function WorkflowTracker({ steps }: { steps: WorkflowStep[] }) {
+  return (
+    <section className="rounded-md border border-slate-200 bg-white p-4">
+      <h2 className="text-base font-semibold text-slate-950">Reviewer Workflow</h2>
+      <ol className="mt-4 space-y-2">
+        {steps.map((step) => (
+          <li key={step.number} className="flex items-center gap-3 text-sm">
+            <span
+              className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md border text-xs font-semibold ${
+                step.complete
+                  ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                  : step.active
+                    ? "border-blue-200 bg-blue-50 text-blue-700"
+                    : "border-slate-200 bg-slate-50 text-slate-500"
+              }`}
+            >
+              {step.complete ? "OK" : step.number}
+            </span>
+            <span className={step.complete ? "text-slate-900" : "text-slate-600"}>
+              {step.label}
+            </span>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
+function MessageArea({ message }: { message: AppMessage }) {
+  const tone = {
+    info: "border-blue-200 bg-blue-50 text-blue-900",
+    success: "border-emerald-200 bg-emerald-50 text-emerald-900",
+    error: "border-red-200 bg-red-50 text-red-900",
+    warning: "border-amber-200 bg-amber-50 text-amber-900",
+  }[message.tone];
+
+  return (
+    <section className={`rounded-md border p-4 text-sm ${tone}`}>
+      <p className="font-semibold">{message.title}</p>
+      <p className="mt-1">{message.body}</p>
+    </section>
+  );
+}
+
+function SystemSnapshot({
+  uploadedDocument,
+  processedDocument,
+  indexedDocument,
+  generatedDraft,
+  learningRules,
+}: {
+  uploadedDocument: UploadedDocument | null;
+  processedDocument: ProcessedDocument | null;
+  indexedDocument: IndexedDocument | null;
+  generatedDraft: GeneratedDraft | null;
+  learningRules: LearnedRule[];
+}) {
+  const activeRules = learningRules.filter((rule) => rule.is_active).length;
+  return (
+    <section className="rounded-md border border-slate-200 bg-white p-4 text-sm">
+      <h2 className="text-base font-semibold text-slate-950">Current Status</h2>
+      <div className="mt-3 space-y-2 text-slate-600">
+        <StatusLine label="Document" value={uploadedDocument?.original_filename ?? "Not uploaded"} />
+        <StatusLine label="Pages" value={processedDocument ? String(processedDocument.page_count) : "Pending"} />
+        <StatusLine label="Index" value={indexedDocument ? `${indexedDocument.chunk_count} chunks` : "Pending"} />
+        <StatusLine label="Draft" value={generatedDraft ? `Draft ${generatedDraft.draft_id}` : "Pending"} />
+        <StatusLine label="Active rules" value={String(activeRules)} />
+      </div>
+    </section>
+  );
+}
+
+function StatusLine({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-start justify-between gap-3">
+      <span className="text-slate-500">{label}</span>
+      <span className="text-right font-medium text-slate-800">{value}</span>
+    </div>
+  );
+}
+
+function DashboardPanel({
+  step,
+  title,
+  subtitle,
+  children,
+}: {
+  step?: string;
+  title: string;
+  subtitle: string;
+  children: ReactNode;
+}) {
+  return (
+    <section className="rounded-md border border-slate-200 bg-white p-5">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <div className="flex items-center gap-2">
+            {step ? (
+              <span className="rounded-md bg-slate-950 px-2 py-1 text-xs font-semibold text-white">
+                Step {step}
+              </span>
+            ) : null}
+            <h2 className="text-lg font-semibold text-slate-950">{title}</h2>
+          </div>
+          <p className="mt-1 text-sm font-medium text-slate-500">{subtitle}</p>
+        </div>
+        <span className="rounded-md bg-slate-100 px-2 py-1 text-xs font-medium text-slate-600">
+          Phase 10
+        </span>
+      </div>
+      <div className="mt-4">{children}</div>
+    </section>
+  );
+}
+
+function ActionPanel({
+  ready,
+  complete,
+  emptyText,
+  buttonText,
+  loadingText,
+  isLoading,
+  children,
+  onClick,
+}: {
+  ready: boolean;
+  complete: boolean;
+  emptyText: string;
+  buttonText: string;
+  loadingText: string;
+  isLoading: boolean;
+  children: ReactNode;
+  onClick: () => void;
+}) {
+  return (
+    <div className="space-y-4 rounded-md border border-slate-200 bg-slate-50 p-4 text-sm">
+      {!ready ? <p className="text-slate-600">{emptyText}</p> : null}
+      <button
+        type="button"
+        onClick={onClick}
+        disabled={!ready || isLoading}
+        className="rounded-md bg-slate-950 px-3 py-2 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400"
+      >
+        {isLoading ? loadingText : complete ? `Run Again: ${buttonText}` : buttonText}
+      </button>
+      {children}
+    </div>
+  );
+}
+
+function ProcessedSummary({ processedDocument }: { processedDocument: ProcessedDocument }) {
+  return (
+    <div className="space-y-3">
+      <p className="font-medium text-slate-900">
+        Processed {processedDocument.page_count} page
+        {processedDocument.page_count === 1 ? "" : "s"}.
+      </p>
+      {processedDocument.warnings.length ? (
+        <p className="rounded-md border border-amber-200 bg-amber-50 p-3 text-amber-800">
+          {processedDocument.warnings.join(" ")}
+        </p>
+      ) : null}
+      <div className="space-y-2">
+        {processedDocument.pages.map((page) => (
+          <div key={page.page_number} className="rounded-md border border-slate-200 bg-white p-3">
+            <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+              <p className="font-medium text-slate-900">Page {page.page_number}</p>
+              <p className="text-slate-500">
+                {page.source_type}
+                {page.ocr_engine ? ` | ${page.ocr_engine}` : ""}
+                {page.ocr_confidence === null
+                  ? ""
+                  : ` | OCR ${(page.ocr_confidence * 100).toFixed(0)}%`}
+              </p>
+            </div>
+            <p className="mt-2 text-slate-600">{page.text_preview || "No readable text was extracted."}</p>
+            {page.warnings?.length ? (
+              <p className="mt-2 text-amber-700">{page.warnings.join(" ")}</p>
+            ) : null}
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
 function StructuredFieldsPanel({
   processedDocument,
   structuredExtraction,
-  error,
-  isExtracting,
+  isLoading,
   onExtract,
 }: {
   processedDocument: ProcessedDocument | null;
   structuredExtraction: StructuredExtraction | null;
-  error: string | null;
-  isExtracting: boolean;
+  isLoading: boolean;
   onExtract: () => void;
 }) {
-  if (!processedDocument) {
-    return (
-      <div className="min-h-28 rounded-md border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-600">
-        Process a document to enable field extraction.
-      </div>
-    );
-  }
-
   const fields = structuredExtraction?.structured_fields;
 
   return (
     <div className="space-y-4 rounded-md border border-slate-200 bg-slate-50 p-4 text-sm">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <p className="font-medium text-slate-900">Structured extraction</p>
-          <p className="text-slate-600">
-            {structuredExtraction ? `Method: ${structuredExtraction.method}` : "Ready after processing."}
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={onExtract}
-          disabled={isExtracting}
-          className="rounded-md bg-slate-950 px-3 py-2 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400"
-        >
-          {isExtracting ? "Extracting..." : "Extract Fields"}
-        </button>
-      </div>
-
-      {error ? (
-        <p className="rounded-md border border-red-200 bg-red-50 p-3 text-red-700">{error}</p>
-      ) : null}
-
+      <button
+        type="button"
+        onClick={onExtract}
+        disabled={!processedDocument || isLoading}
+        className="rounded-md bg-slate-950 px-3 py-2 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400"
+      >
+        {isLoading ? "Extracting..." : structuredExtraction ? "Run Again: Extract Fields" : "Extract Fields"}
+      </button>
+      {!processedDocument ? <p className="text-slate-600">Process a document to enable field extraction.</p> : null}
       {structuredExtraction?.warnings.length ? (
-        <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-amber-800">
+        <p className="rounded-md border border-amber-200 bg-amber-50 p-3 text-amber-800">
           {structuredExtraction.warnings.join(" ")}
-        </div>
+        </p>
       ) : null}
-
       {fields ? (
-        <div className="space-y-3">
-          <FieldRow label="Document type" value={fields.document_type ?? "Not detected"} />
-          <ListField label="Parties" values={fields.parties} />
-          <ListField label="Dates" values={fields.dates} />
-          <ListField label="Addresses" values={fields.addresses} />
-          <ListField label="Monetary amounts" values={fields.monetary_amounts} />
-          <ListField label="Case numbers" values={fields.case_numbers} />
-          <div className="rounded-md border border-slate-200 bg-white p-3">
+        <div className="grid gap-3 md:grid-cols-2">
+          <FieldBlock label="Document type" value={fields.document_type ?? "Not detected"} />
+          <ListBlock label="Parties" values={fields.parties} />
+          <ListBlock label="Dates" values={fields.dates} />
+          <ListBlock label="Money" values={fields.monetary_amounts} />
+          <ListBlock label="Case numbers" values={fields.case_numbers} />
+          <ListBlock label="Addresses" values={fields.addresses} />
+          <div className="rounded-md border border-slate-200 bg-white p-3 md:col-span-2">
             <p className="font-medium text-slate-900">Key events</p>
             {fields.key_events.length ? (
-              <ul className="mt-2 space-y-2 text-slate-600">
+              <ul className="mt-2 space-y-1 text-slate-600">
                 {fields.key_events.map((event, index) => (
                   <li key={`${event.event}-${index}`}>
                     {event.event}
-                    {event.date ? ` · ${event.date}` : ""}
-                    {event.source_page ? ` · page ${event.source_page}` : ""}
+                    {event.date ? ` | ${event.date}` : ""}
+                    {event.source_page ? ` | page ${event.source_page}` : ""}
                   </li>
                 ))}
               </ul>
@@ -347,14 +711,13 @@ function StructuredFieldsPanel({
               <p className="mt-2 text-slate-500">None detected.</p>
             )}
           </div>
-          <ListField label="Unclear items" values={fields.unclear_items} />
         </div>
       ) : null}
     </div>
   );
 }
 
-function FieldRow({ label, value }: { label: string; value: string }) {
+function FieldBlock({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-md border border-slate-200 bg-white p-3">
       <p className="font-medium text-slate-900">{label}</p>
@@ -363,14 +726,14 @@ function FieldRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-function ListField({ label, values }: { label: string; values: string[] }) {
+function ListBlock({ label, values }: { label: string; values: string[] }) {
   return (
     <div className="rounded-md border border-slate-200 bg-white p-3">
       <p className="font-medium text-slate-900">{label}</p>
       {values.length ? (
         <ul className="mt-2 space-y-1 text-slate-600">
-          {values.map((value) => (
-            <li key={value}>{value}</li>
+          {values.map((value, index) => (
+            <li key={`${value}-${index}`}>{value}</li>
           ))}
         </ul>
       ) : (
@@ -380,129 +743,54 @@ function ListField({ label, values }: { label: string; values: string[] }) {
   );
 }
 
-function DashboardPanel({
-  title,
-  subtitle,
-  body,
-  children,
-}: {
-  title: string;
-  subtitle: string;
-  body?: string;
-  children?: React.ReactNode;
-}) {
-  return (
-    <section className="rounded-md border border-slate-200 bg-white p-5">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h2 className="text-lg font-semibold text-slate-950">{title}</h2>
-          <p className="mt-1 text-sm font-medium text-slate-500">{subtitle}</p>
-        </div>
-        <span className="rounded-md bg-slate-100 px-2 py-1 text-xs font-medium text-slate-600">
-          Phase 7
-        </span>
-      </div>
-      <div className="mt-4">
-        {children ?? (
-          <div className="min-h-28 rounded-md border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-600">
-            {body}
-          </div>
-        )}
-      </div>
-    </section>
-  );
-}
-
-function DraftPanel({
+function IndexPanel({
+  processedDocument,
   indexedDocument,
-  generatedDraft,
-  draftText,
-  error,
-  isGenerating,
-  onDraftChange,
-  onGenerate,
+  isLoading,
+  onIndex,
 }: {
+  processedDocument: ProcessedDocument | null;
   indexedDocument: IndexedDocument | null;
-  generatedDraft: GeneratedDraft | null;
-  draftText: string;
-  error: string | null;
-  isGenerating: boolean;
-  onDraftChange: (value: string) => void;
-  onGenerate: () => void;
+  isLoading: boolean;
+  onIndex: () => void;
 }) {
-  if (!indexedDocument) {
-    return (
-      <div className="min-h-28 rounded-md border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-600">
-        Index a processed document to enable grounded draft generation.
-      </div>
-    );
-  }
-
   return (
-    <div className="space-y-4 rounded-md border border-slate-200 bg-slate-50 p-4 text-sm">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <p className="font-medium text-slate-900">Case fact summary</p>
-          <p className="text-slate-600">
-            {generatedDraft ? `Model: ${generatedDraft.model_used}` : "Ready to generate from evidence."}
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={onGenerate}
-          disabled={isGenerating}
-          className="rounded-md bg-slate-950 px-3 py-2 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400"
-        >
-          {isGenerating ? "Generating..." : "Generate Draft"}
-        </button>
-      </div>
-
-      <p className="rounded-md border border-amber-200 bg-amber-50 p-3 text-amber-800">
-        This draft is generated only from retrieved evidence and may require human review.
-      </p>
-
-      {error ? (
-        <p className="rounded-md border border-red-200 bg-red-50 p-3 text-red-700">{error}</p>
-      ) : null}
-
-      {generatedDraft ? (
-        <div className="space-y-3">
-          <p className="text-slate-600">{generatedDraft.grounding_note}</p>
-          <textarea
-            value={draftText}
-            onChange={(event) => onDraftChange(event.target.value)}
-            rows={18}
-            className="w-full resize-y rounded-md border border-slate-300 bg-white px-3 py-2 font-mono text-sm text-slate-900 outline-none transition focus:border-slate-500"
-          />
+    <ActionPanel
+      ready={Boolean(processedDocument)}
+      complete={Boolean(indexedDocument)}
+      emptyText="Process a document to enable retrieval indexing."
+      buttonText="Index for Retrieval"
+      loadingText="Indexing..."
+      isLoading={isLoading}
+      onClick={onIndex}
+    >
+      {indexedDocument ? (
+        <div className="rounded-md border border-slate-200 bg-white p-3 text-slate-600">
+          <p>Status: {indexedDocument.status}</p>
+          <p>Chunks: {indexedDocument.chunk_count}</p>
+          <p>Embedding model: {indexedDocument.embedding_model}</p>
+          <p>Vector DB: {indexedDocument.vector_db}</p>
         </div>
       ) : null}
-    </div>
+    </ActionPanel>
   );
 }
 
-function RetrievalQueryPanel({
+function RetrievalPanel({
   indexedDocument,
   query,
-  error,
-  isRetrieving,
+  result,
+  isLoading,
   onQueryChange,
   onRetrieve,
 }: {
   indexedDocument: IndexedDocument | null;
   query: string;
-  error: string | null;
-  isRetrieving: boolean;
+  result: RetrievalQueryResult | null;
+  isLoading: boolean;
   onQueryChange: (value: string) => void;
   onRetrieve: () => void;
 }) {
-  if (!indexedDocument) {
-    return (
-      <div className="min-h-28 rounded-md border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-600">
-        Index a processed document to test evidence retrieval.
-      </div>
-    );
-  }
-
   return (
     <div className="space-y-4 rounded-md border border-slate-200 bg-slate-50 p-4 text-sm">
       <label className="block">
@@ -511,22 +799,23 @@ function RetrievalQueryPanel({
           value={query}
           onChange={(event) => onQueryChange(event.target.value)}
           rows={3}
-          className="mt-2 w-full resize-none rounded-md border border-slate-300 bg-white px-3 py-2 text-slate-900 outline-none transition focus:border-slate-500"
+          disabled={!indexedDocument || isLoading}
+          className="mt-2 w-full resize-none rounded-md border border-slate-300 bg-white px-3 py-2 text-slate-900 outline-none transition focus:border-slate-500 disabled:bg-slate-100"
         />
       </label>
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <p className="text-slate-600">Top 6 chunks from document {indexedDocument.document_id}</p>
-        <button
-          type="button"
-          onClick={onRetrieve}
-          disabled={isRetrieving || !query.trim()}
-          className="rounded-md bg-slate-950 px-3 py-2 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400"
-        >
-          {isRetrieving ? "Retrieving..." : "Retrieve Evidence"}
-        </button>
-      </div>
-      {error ? (
-        <p className="rounded-md border border-red-200 bg-red-50 p-3 text-red-700">{error}</p>
+      <button
+        type="button"
+        onClick={onRetrieve}
+        disabled={!indexedDocument || !query.trim() || isLoading}
+        className="rounded-md bg-slate-950 px-3 py-2 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400"
+      >
+        {isLoading ? "Retrieving..." : result ? "Run Again: Retrieve Evidence" : "Retrieve Evidence"}
+      </button>
+      {!indexedDocument ? <p className="text-slate-600">Index a processed document to retrieve evidence.</p> : null}
+      {result ? (
+        <p className="text-slate-600">
+          {result.evidence.length} chunk{result.evidence.length === 1 ? "" : "s"} returned.
+        </p>
       ) : null}
     </div>
   );
@@ -535,16 +824,14 @@ function RetrievalQueryPanel({
 function EvidencePanel({
   evidence,
   message,
-  heading,
 }: {
   evidence: EvidenceChunk[] | null;
   message: string | null;
-  heading: string;
 }) {
   if (!evidence) {
     return (
-      <div className="min-h-28 rounded-md border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-600">
-        Retrieved chunks and source details will appear here after a retrieval query.
+      <div className="min-h-32 rounded-md border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-600">
+        Evidence will appear after Step 5 or after draft generation.
       </div>
     );
   }
@@ -559,174 +846,288 @@ function EvidencePanel({
 
   return (
     <div className="space-y-3 text-sm">
-      <p className="font-medium text-slate-900">{heading}</p>
       {evidence.map((chunk) => (
-        <EvidenceCard key={chunk.chunk_id || `${chunk.page_number}-${chunk.text}`} chunk={chunk} />
+        <article key={chunk.chunk_id || `${chunk.page_number}-${chunk.text}`} className="rounded-md border border-slate-200 bg-slate-50 p-4">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <p className="font-medium text-slate-900">{chunk.source.filename || "Unknown file"}</p>
+              <p className="text-slate-600">Page {chunk.page_number}</p>
+            </div>
+            <span className="rounded-md bg-white px-2 py-1 text-xs font-medium text-slate-700">
+              Relevance {chunk.relevance_score.toFixed(2)}
+            </span>
+          </div>
+          <p className="mt-3 line-clamp-5 whitespace-pre-wrap text-slate-700">
+            {chunk.text || "No chunk text returned."}
+          </p>
+        </article>
       ))}
     </div>
   );
 }
 
-function EvidenceCard({ chunk }: { chunk: EvidenceChunk }) {
+function DraftEditorPanel({
+  indexedDocument,
+  generatedDraft,
+  previousDraft,
+  draftText,
+  isGenerating,
+  isSavingEdit,
+  hasActiveRules,
+  editResult,
+  onGenerate,
+  onDraftChange,
+  onSaveEdit,
+}: {
+  indexedDocument: IndexedDocument | null;
+  generatedDraft: GeneratedDraft | null;
+  previousDraft: GeneratedDraft | null;
+  draftText: string;
+  isGenerating: boolean;
+  isSavingEdit: boolean;
+  hasActiveRules: boolean;
+  editResult: DraftEditResult | null;
+  onGenerate: () => void;
+  onDraftChange: (value: string) => void;
+  onSaveEdit: () => void;
+}) {
+  const isEdited = Boolean(generatedDraft && draftText !== generatedDraft.draft);
+
   return (
-    <article className="rounded-md border border-slate-200 bg-slate-50 p-4">
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+    <div className="space-y-4 rounded-md border border-slate-200 bg-slate-50 p-4 text-sm">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <p className="font-medium text-slate-900">Page {chunk.page_number}</p>
-          <p className="text-slate-600">{chunk.source.filename || "Unknown file"}</p>
+          <p className="font-medium text-slate-900">Draft editor</p>
+          <p className="text-slate-600">
+            {generatedDraft ? `Model used: ${generatedDraft.model_used}` : "Generate after indexing."}
+          </p>
         </div>
-        <p className="rounded-md bg-white px-2 py-1 text-xs font-medium text-slate-700">
-          Score {chunk.relevance_score.toFixed(2)}
-        </p>
+        <button
+          type="button"
+          onClick={onGenerate}
+          disabled={!indexedDocument || isGenerating}
+          className="rounded-md bg-slate-950 px-3 py-2 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400"
+        >
+          {isGenerating
+            ? "Generating..."
+            : hasActiveRules
+              ? "Generate Improved Draft"
+              : "Generate Grounded Draft"}
+        </button>
       </div>
-      <p className="mt-2 text-xs uppercase text-slate-500">
-        {chunk.source.source_type || "unknown source"}
-        {chunk.source.ocr_confidence === null
-          ? ""
-          : ` | OCR ${(chunk.source.ocr_confidence * 100).toFixed(0)}%`}
+
+      {!indexedDocument ? <p className="text-slate-600">Index a processed document to generate a draft.</p> : null}
+
+      {generatedDraft ? (
+        <>
+          <DraftLearningSummary draft={generatedDraft} />
+          {previousDraft ? <DraftComparison previousDraft={previousDraft} currentDraft={generatedDraft} /> : null}
+          <label className="block">
+            <span className="font-medium text-slate-900">Step 7: Edit Draft</span>
+            <textarea
+              value={draftText}
+              onChange={(event) => onDraftChange(event.target.value)}
+              rows={18}
+              className="mt-2 w-full resize-y rounded-md border border-slate-300 bg-white px-3 py-2 font-mono text-sm text-slate-900 outline-none transition focus:border-slate-500"
+            />
+          </label>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-slate-600">
+              {isEdited
+                ? "Edited wording is ready to save as an operator improvement."
+                : "Make an edit before saving operator feedback."}
+            </p>
+            <button
+              type="button"
+              onClick={onSaveEdit}
+              disabled={!isEdited || isSavingEdit || !draftText.trim()}
+              className="rounded-md bg-emerald-700 px-3 py-2 text-sm font-medium text-white transition hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-slate-400"
+            >
+              {isSavingEdit ? "Saving..." : "Save Operator Edit"}
+            </button>
+          </div>
+          {editResult ? <SavedEditSummary editResult={editResult} /> : null}
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+function DraftLearningSummary({ draft }: { draft: GeneratedDraft }) {
+  const appliedRules = draft.applied_learning_rules ?? [];
+
+  return (
+    <div className="space-y-3">
+      <p className="rounded-md border border-amber-200 bg-amber-50 p-3 text-amber-800">
+        {draft.grounding_note}
       </p>
-      <p className="mt-3 line-clamp-6 whitespace-pre-wrap text-slate-700">
-        {chunk.text || "No chunk text returned."}
+      {draft.learning_rules_warning ? (
+        <p className="rounded-md border border-amber-200 bg-amber-50 p-3 text-amber-800">
+          {draft.learning_rules_warning}
+        </p>
+      ) : null}
+      {appliedRules.length ? (
+        <div className="rounded-md border border-sky-200 bg-sky-50 p-3 text-sky-900">
+          <p className="font-medium">This draft request included active operator-learned rules.</p>
+          <p className="mt-1 text-sm">
+            These are the rules returned by the API as injected into the generation prompt.
+          </p>
+          <div className="mt-3 grid gap-2 md:grid-cols-2">
+            {appliedRules.map((rule) => (
+              <RuleCard key={rule.rule_id ?? rule.rule_text} rule={rule} compact />
+            ))}
+          </div>
+        </div>
+      ) : (
+        <p className="rounded-md border border-slate-200 bg-white p-3 text-slate-600">
+          No active operator-learned rules were applied to this draft.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function DraftComparison({
+  previousDraft,
+  currentDraft,
+}: {
+  previousDraft: GeneratedDraft;
+  currentDraft: GeneratedDraft;
+}) {
+  const previousText = normalizeDraftText(previousDraft.draft);
+  const currentText = normalizeDraftText(currentDraft.draft);
+  const changed = previousText !== currentText;
+
+  return (
+    <div className="space-y-3">
+      <p
+        className={`rounded-md border p-3 text-sm ${
+          changed
+            ? "border-emerald-200 bg-emerald-50 text-emerald-900"
+            : "border-amber-200 bg-amber-50 text-amber-900"
+        }`}
+      >
+        {changed
+          ? "The improved draft text differs from the previous draft."
+          : "No text-level difference detected between the previous and improved draft."}
       </p>
+      <div className="grid gap-3 md:grid-cols-2">
+        <label className="block">
+          <span className="font-medium text-slate-900">Previous draft</span>
+          <textarea
+            value={previousDraft.draft}
+            readOnly
+            rows={8}
+            className="mt-2 w-full resize-y rounded-md border border-slate-300 bg-white px-3 py-2 font-mono text-xs text-slate-700 outline-none"
+          />
+        </label>
+        <label className="block">
+          <span className="font-medium text-slate-900">Improved draft</span>
+          <textarea
+            value={currentDraft.draft}
+            readOnly
+            rows={8}
+            className="mt-2 w-full resize-y rounded-md border border-slate-300 bg-white px-3 py-2 font-mono text-xs text-slate-700 outline-none"
+          />
+        </label>
+      </div>
+    </div>
+  );
+}
+
+function SavedEditSummary({ editResult }: { editResult: DraftEditResult }) {
+  return (
+    <div className="space-y-3 rounded-md border border-emerald-200 bg-emerald-50 p-3 text-emerald-900">
+      <p className="font-medium">{editResult.message}</p>
+      {editResult.warning ? <p>{editResult.warning}</p> : null}
+      {editResult.learned_rules.length ? (
+        <div className="grid gap-2 md:grid-cols-2">
+          {editResult.learned_rules.map((rule) => (
+            <RuleCard key={rule.rule_id ?? rule.rule_text} rule={rule} compact />
+          ))}
+        </div>
+      ) : (
+        <p>No reusable rule was extracted from this edit.</p>
+      )}
+    </div>
+  );
+}
+
+function LearnedRulesPanel({
+  rules,
+  updatingRuleId,
+  onToggleRule,
+}: {
+  rules: LearnedRule[];
+  updatingRuleId: string | null;
+  onToggleRule: (rule: LearnedRule) => void;
+}) {
+  if (!rules.length) {
+    return (
+      <div className="min-h-28 rounded-md border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-600">
+        Step 9 will populate after an operator edit is saved and reusable rules are extracted.
+      </div>
+    );
+  }
+
+  const activeCount = rules.filter((rule) => rule.is_active).length;
+
+  return (
+    <div className="space-y-4 text-sm">
+      <p className="rounded-md border border-sky-200 bg-sky-50 p-3 text-sky-800">
+        {activeCount} active rule{activeCount === 1 ? "" : "s"} will be used when Step 10 generates an improved draft.
+      </p>
+      <div className="grid gap-3 md:grid-cols-2">
+        {rules.map((rule) => (
+          <div key={rule.rule_id} className="space-y-2">
+            <RuleCard rule={rule} />
+            <button
+              type="button"
+              onClick={() => onToggleRule(rule)}
+              disabled={updatingRuleId === rule.rule_id}
+              className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-800 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-400"
+            >
+              {updatingRuleId === rule.rule_id
+                ? "Updating..."
+                : rule.is_active
+                  ? "Disable Rule"
+                  : "Enable Rule"}
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function RuleCard({ rule, compact = false }: { rule: LearnedRule; compact?: boolean }) {
+  return (
+    <article className="rounded-md border border-slate-200 bg-white p-3 text-sm">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <p className="font-medium capitalize text-slate-900">{rule.rule_type}</p>
+        <span
+          className={`rounded-md px-2 py-1 text-xs font-medium ${
+            rule.is_active ? "bg-emerald-100 text-emerald-800" : "bg-slate-100 text-slate-600"
+          }`}
+        >
+          {rule.is_active ? "Active" : "Inactive"}
+        </span>
+      </div>
+      <p className="mt-2 text-slate-700">{rule.rule_text}</p>
+      {!compact && (rule.example_before || rule.example_after) ? (
+        <div className="mt-3 space-y-2 text-xs text-slate-600">
+          {rule.example_before ? <p>Before: {rule.example_before}</p> : null}
+          {rule.example_after ? <p>After: {rule.example_after}</p> : null}
+        </div>
+      ) : null}
     </article>
   );
 }
 
-function IndexPanel({
-  processedDocument,
-  indexedDocument,
-  error,
-  isIndexing,
-  onIndex,
-}: {
-  processedDocument: ProcessedDocument | null;
-  indexedDocument: IndexedDocument | null;
-  error: string | null;
-  isIndexing: boolean;
-  onIndex: () => void;
-}) {
-  if (!processedDocument) {
-    return (
-      <div className="min-h-28 rounded-md border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-600">
-        Process a document to enable retrieval indexing.
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-4 rounded-md border border-slate-200 bg-slate-50 p-4 text-sm">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <p className="font-medium text-slate-900">Retrieval-ready index</p>
-          <p className="text-slate-600">
-            {indexedDocument
-              ? `${indexedDocument.chunk_count} chunks in ${indexedDocument.vector_db}`
-              : "Ready to create chunks and embeddings."}
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={onIndex}
-          disabled={isIndexing}
-          className="rounded-md bg-slate-950 px-3 py-2 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400"
-        >
-          {isIndexing ? "Indexing..." : "Index for Retrieval"}
-        </button>
-      </div>
-
-      {error ? (
-        <p className="rounded-md border border-red-200 bg-red-50 p-3 text-red-700">{error}</p>
-      ) : null}
-
-      {indexedDocument ? (
-        <div className="rounded-md border border-slate-200 bg-white p-3 text-slate-600">
-          <p>Status: {indexedDocument.status}</p>
-          <p>Embedding model: {indexedDocument.embedding_model}</p>
-          <p>Vector DB: {indexedDocument.vector_db}</p>
-        </div>
-      ) : null}
-    </div>
-  );
+function getErrorMessage(error: unknown, fallback: string) {
+  return error instanceof Error ? error.message : fallback;
 }
 
-function ProcessingPanel({
-  uploadedDocument,
-  processedDocument,
-  processingError,
-  isProcessing,
-  onProcess,
-}: {
-  uploadedDocument: UploadedDocument | null;
-  processedDocument: ProcessedDocument | null;
-  processingError: string | null;
-  isProcessing: boolean;
-  onProcess: () => void;
-}) {
-  if (!uploadedDocument) {
-    return (
-      <div className="min-h-28 rounded-md border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-600">
-        Upload a document to enable processing.
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-4 rounded-md border border-slate-200 bg-slate-50 p-4 text-sm">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <p className="font-medium text-slate-900">{uploadedDocument.original_filename}</p>
-          <p className="text-slate-600">Document ID: {uploadedDocument.document_id}</p>
-        </div>
-        <button
-          type="button"
-          onClick={onProcess}
-          disabled={isProcessing}
-          className="rounded-md bg-slate-950 px-3 py-2 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400"
-        >
-          {isProcessing ? "Processing..." : "Process Document"}
-        </button>
-      </div>
-
-      {processingError ? (
-        <p className="rounded-md border border-red-200 bg-red-50 p-3 text-red-700">
-          {processingError}
-        </p>
-      ) : null}
-
-      {processedDocument ? (
-        <div className="space-y-3">
-          <p className="font-medium text-slate-900">
-            Processed {processedDocument.page_count} page
-            {processedDocument.page_count === 1 ? "" : "s"}.
-          </p>
-          {processedDocument.warnings.length > 0 ? (
-            <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-amber-800">
-              {processedDocument.warnings.join(" ")}
-            </div>
-          ) : null}
-          <div className="space-y-3">
-            {processedDocument.pages.map((page) => (
-              <div key={page.page_number} className="rounded-md border border-slate-200 bg-white p-3">
-                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                  <p className="font-medium text-slate-900">Page {page.page_number}</p>
-                  <p className="text-slate-600">
-                    {page.source_type}
-                    {page.ocr_confidence === null
-                      ? ""
-                      : ` · Confidence ${(page.ocr_confidence * 100).toFixed(0)}%`}
-                  </p>
-                </div>
-                <p className="mt-2 text-slate-600">
-                  {page.text_preview || "No readable text was extracted."}
-                </p>
-                {page.is_unclear ? (
-                  <p className="mt-2 text-amber-700">This page may need operator review.</p>
-                ) : null}
-              </div>
-            ))}
-          </div>
-        </div>
-      ) : null}
-    </div>
-  );
+function normalizeDraftText(value: string) {
+  return value.replace(/\s+/g, " ").trim();
 }

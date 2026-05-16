@@ -1,10 +1,18 @@
 from fastapi import APIRouter, HTTPException, status
 
-from app.models.schemas import DraftGenerateRequest, DraftGenerateResponse
+from app.models.schemas import (
+    DraftEditRequest,
+    DraftEditResponse,
+    DraftGenerateRequest,
+    DraftGenerateResponse,
+    LearnedRule,
+)
 from app.repositories.documents_repository import (
-    fetch_active_learning_rules,
     fetch_document,
+    fetch_draft,
     insert_draft,
+    insert_learning_rules,
+    insert_operator_edit,
 )
 from app.services.draft_generation_service import (
     DraftGenerationService,
@@ -14,6 +22,7 @@ from app.services.draft_generation_service import (
     NoEvidenceFoundError,
     UnsupportedDraftTypeError,
 )
+from app.services.edit_learning_service import EditLearningService
 from app.services.embedding_service import EmbeddingModelUnavailableError
 from app.services.vector_store_service import VectorStoreError
 
@@ -47,14 +56,12 @@ async def generate_draft(request: DraftGenerateRequest) -> DraftGenerateResponse
             detail="Document must be indexed before a draft can be generated.",
         )
 
-    learning_rules = await fetch_active_learning_rules()
     service = DraftGenerationService()
     try:
         result = await service.generate_case_fact_summary(
             document_id=document.id,
             draft_type=request.draft_type,
             top_k=request.top_k,
-            learning_rules=learning_rules,
         )
     except UnsupportedDraftTypeError as exc:
         raise HTTPException(
@@ -114,4 +121,81 @@ async def generate_draft(request: DraftGenerateRequest) -> DraftGenerateResponse
         evidence=result.evidence,
         model_used=result.model_used,
         grounding_note=result.grounding_note,
+        applied_learning_rules=result.applied_learning_rules,
+        learning_rules_warning=result.learning_rules_warning,
+    )
+
+
+@router.post(
+    "/{draft_id}/edits",
+    response_model=DraftEditResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def save_operator_edit(
+    draft_id: str,
+    request: DraftEditRequest,
+) -> DraftEditResponse:
+    try:
+        parsed_draft_id = int(draft_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="draft_id must be a valid integer string.",
+        ) from exc
+
+    try:
+        draft = await fetch_draft(parsed_draft_id)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unable to load original draft.",
+        ) from exc
+
+    if draft is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Draft not found.",
+        )
+
+    learning_service = EditLearningService()
+    extraction_result = await learning_service.extract_rules(
+        original_draft=draft.content,
+        edited_draft=request.edited_draft,
+    )
+
+    try:
+        edit_id = await insert_operator_edit(
+            draft_id=draft.id,
+            original_content=draft.content,
+            edited_content=request.edited_draft,
+            edit_notes=extraction_result.diff_text,
+        )
+        inserted_rules = await insert_learning_rules(
+            source_edit_id=edit_id,
+            rules=extraction_result.rules,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unable to save operator edit or learned rules.",
+        ) from exc
+
+    learned_rules = [
+        LearnedRule(
+            rule_id=str(rule["id"]),
+            rule_type=str(rule["rule_type"]),
+            rule_text=str(rule["rule_text"]),
+            example_before=rule.get("example_before"),
+            example_after=rule.get("example_after"),
+            is_active=True,
+        )
+        for rule in inserted_rules
+    ]
+
+    return DraftEditResponse(
+        edit_id=str(edit_id),
+        draft_id=str(draft.id),
+        learned_rules=learned_rules,
+        message="Operator edit saved and reusable rules extracted.",
+        warning=extraction_result.warning,
     )

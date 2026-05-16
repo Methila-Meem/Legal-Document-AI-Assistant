@@ -2,8 +2,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class OcrHealth(BaseModel):
-    engine: str
+    selected_engine: str
     available: bool
+    active_engine: str | None = None
+    fallback_engine: str | None = None
+    error_message: str | None = None
     message: str
 
 
@@ -38,7 +41,9 @@ class ProcessedPageResponse(BaseModel):
     source_type: str
     text_preview: str
     ocr_confidence: float | None = None
+    ocr_engine: str | None = None
     is_unclear: bool
+    warnings: list[str] = []
 
 
 class DocumentProcessResponse(BaseModel):
@@ -131,6 +136,15 @@ class DraftGenerateRequest(BaseModel):
         return cleaned
 
 
+class LearnedRule(BaseModel):
+    rule_id: str | None = None
+    rule_type: str
+    rule_text: str
+    example_before: str | None = None
+    example_after: str | None = None
+    is_active: bool = True
+
+
 class DraftGenerateResponse(BaseModel):
     draft_id: str
     document_id: str
@@ -139,6 +153,42 @@ class DraftGenerateResponse(BaseModel):
     evidence: list[EvidenceChunk]
     model_used: str
     grounding_note: str
+    applied_learning_rules: list[LearnedRule] = []
+    learning_rules_warning: str | None = None
+
+
+class DraftEditRequest(BaseModel):
+    edited_draft: str = Field(min_length=1)
+
+    @field_validator("edited_draft")
+    @classmethod
+    def require_non_empty_edit(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("edited_draft must not be empty.")
+        return cleaned
+
+
+class DraftEditResponse(BaseModel):
+    edit_id: str
+    draft_id: str
+    learned_rules: list[LearnedRule]
+    message: str
+    warning: str | None = None
+
+
+class LearningRuleResponse(BaseModel):
+    rule_id: str
+    rule_type: str
+    rule_text: str
+    example_before: str | None = None
+    example_after: str | None = None
+    is_active: bool
+    source_edit_id: str | None = None
+
+
+class LearningRuleUpdateRequest(BaseModel):
+    is_active: bool
 
 
 class ErrorDetail(BaseModel):

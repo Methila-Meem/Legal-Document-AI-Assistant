@@ -5,11 +5,11 @@ from pathlib import Path
 import cv2
 import fitz
 import numpy as np
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageFilter, ImageOps, UnidentifiedImageError
 
 from app.core.config import settings
 from app.repositories.documents_repository import DocumentRecord
-from app.services.ocr_service import OcrExecutionError, OcrUnavailableError, PaddleOCRService
+from app.services.ocr_service import OCRManager, OcrExecutionError, OcrUnavailableError
 
 
 class DocumentProcessingError(Exception):
@@ -21,7 +21,9 @@ class UnsupportedDocumentTypeError(DocumentProcessingError):
 
 
 class OcrEngineMissingError(DocumentProcessingError):
-    pass
+    def __init__(self, message: str, detail: dict[str, object] | None = None) -> None:
+        super().__init__(message)
+        self.detail = detail
 
 
 class OcrProcessingError(DocumentProcessingError):
@@ -35,7 +37,9 @@ class ProcessedPage:
     text: str
     text_preview: str
     ocr_confidence: float | None
+    ocr_engine: str | None
     is_unclear: bool
+    warnings: list[str]
 
 
 @dataclass
@@ -52,10 +56,10 @@ class DocumentProcessingService:
     pdf_text_min_chars = 40
 
     def __init__(self) -> None:
-        self.ocr_service = PaddleOCRService()
+        self.ocr_service = OCRManager()
 
     def process(self, document: DocumentRecord) -> ProcessingResult:
-        source_path = Path(settings.storage_dir) / "uploads" / document.stored_filename
+        source_path = settings.resolved_storage_dir / "uploads" / document.stored_filename
         if not source_path.exists():
             raise DocumentProcessingError("Uploaded source file was not found.")
 
@@ -74,6 +78,10 @@ class DocumentProcessingService:
             for page in pages
             if page.is_unclear
         ]
+        for page in pages:
+            warnings.extend(
+                f"Page {page.page_number}: {warning}" for warning in page.warnings
+            )
         output_path = self._write_processed_output(document, pages, warnings)
 
         return ProcessingResult(
@@ -97,7 +105,9 @@ class DocumentProcessingService:
             text=text,
             text_preview=self._preview(text),
             ocr_confidence=None,
+            ocr_engine=None,
             is_unclear=False,
+            warnings=[],
         )
 
     def _process_pdf(self, source_path: Path) -> list[ProcessedPage]:
@@ -118,7 +128,9 @@ class DocumentProcessingService:
                             text=text,
                             text_preview=self._preview(text),
                             ocr_confidence=None,
+                            ocr_engine=None,
                             is_unclear=False,
+                            warnings=[],
                         )
                     )
                     continue
@@ -152,7 +164,8 @@ class DocumentProcessingService:
             result = self.ocr_service.extract_text(processed_image)
         except OcrUnavailableError as exc:
             raise OcrEngineMissingError(
-                "PaddleOCR is unavailable. Install paddleocr and paddlepaddle."
+                "OCR is unavailable.",
+                getattr(exc, "detail", None),
             ) from exc
         except OcrExecutionError as exc:
             raise OcrProcessingError("OCR failed while processing the document.") from exc
@@ -163,6 +176,9 @@ class DocumentProcessingService:
             or confidence < settings.ocr_confidence_threshold
             or not result.text.strip()
         )
+        page_warnings = []
+        if is_unclear:
+            page_warnings.append("OCR confidence is low or no readable text was found.")
 
         return ProcessedPage(
             page_number=page_number,
@@ -170,28 +186,43 @@ class DocumentProcessingService:
             text=result.text,
             text_preview=self._preview(result.text),
             ocr_confidence=confidence,
+            ocr_engine=result.engine_used,
             is_unclear=is_unclear,
+            warnings=page_warnings,
         )
 
     def _preprocess_image(self, image: Image.Image) -> Image.Image:
         rgb_image = image.convert("RGB")
-        array = np.array(rgb_image)
-        gray = cv2.cvtColor(array, cv2.COLOR_RGB2GRAY)
+        if all(
+            hasattr(cv2, attribute)
+            for attribute in ("cvtColor", "medianBlur", "adaptiveThreshold", "resize")
+        ):
+            array = np.array(rgb_image)
+            gray = cv2.cvtColor(array, cv2.COLOR_RGB2GRAY)
 
-        height, width = gray.shape[:2]
-        if max(height, width) < 1200:
-            gray = cv2.resize(gray, None, fx=1.5, fy=1.5, interpolation=cv2.INTER_CUBIC)
+            height, width = gray.shape[:2]
+            if max(height, width) < 1200:
+                gray = cv2.resize(gray, None, fx=1.5, fy=1.5, interpolation=cv2.INTER_CUBIC)
 
-        denoised = cv2.medianBlur(gray, 3)
-        thresholded = cv2.adaptiveThreshold(
-            denoised,
-            255,
-            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-            cv2.THRESH_BINARY,
-            31,
-            11,
-        )
-        return Image.fromarray(thresholded)
+            denoised = cv2.medianBlur(gray, 3)
+            thresholded = cv2.adaptiveThreshold(
+                denoised,
+                255,
+                cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                cv2.THRESH_BINARY,
+                31,
+                11,
+            )
+            return Image.fromarray(thresholded)
+
+        gray_image = ImageOps.grayscale(rgb_image)
+        if max(gray_image.size) < 1200:
+            gray_image = gray_image.resize(
+                (int(gray_image.width * 1.5), int(gray_image.height * 1.5)),
+                Image.Resampling.BICUBIC,
+            )
+        denoised_image = gray_image.filter(ImageFilter.MedianFilter(size=3))
+        return denoised_image.point(lambda pixel: 255 if pixel > 180 else 0)
 
     def _write_processed_output(
         self,
@@ -199,7 +230,7 @@ class DocumentProcessingService:
         pages: list[ProcessedPage],
         warnings: list[str],
     ) -> Path:
-        processed_dir = Path(settings.storage_dir) / "processed"
+        processed_dir = settings.resolved_storage_dir / "processed"
         processed_dir.mkdir(parents=True, exist_ok=True)
         output_path = processed_dir / f"{document.id}.json"
         payload = {

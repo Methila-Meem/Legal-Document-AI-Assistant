@@ -111,6 +111,7 @@ async def process_document(document_id: int) -> DocumentProcessResponse:
                     "text": page.text,
                     "source_type": page.source_type,
                     "ocr_confidence": page.ocr_confidence,
+                    "ocr_engine": page.ocr_engine,
                     "is_unclear": page.is_unclear,
                 }
                 for page in result.pages
@@ -125,10 +126,12 @@ async def process_document(document_id: int) -> DocumentProcessResponse:
     except OcrEngineMissingError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=(
-                "PaddleOCR is unavailable. Install paddleocr and paddlepaddle; "
-                "the first OCR request may download model weights."
-            ),
+            detail=exc.detail
+            or {
+                "message": "OCR is unavailable.",
+                "error": str(exc),
+                "hint": "Activate backend/venv and run: pip install -r requirements.txt.",
+            },
         ) from exc
     except OcrProcessingError as exc:
         raise HTTPException(
@@ -156,7 +159,9 @@ async def process_document(document_id: int) -> DocumentProcessResponse:
                 source_type=page.source_type,
                 text_preview=page.text_preview,
                 ocr_confidence=page.ocr_confidence,
+                ocr_engine=page.ocr_engine,
                 is_unclear=page.is_unclear,
+                warnings=page.warnings,
             )
             for page in result.pages
         ],

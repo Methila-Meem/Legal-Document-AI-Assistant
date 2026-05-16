@@ -22,9 +22,10 @@ class Settings(BaseSettings):
         default="pdf,png,jpg,jpeg,txt",
         alias="ALLOWED_UPLOAD_EXTENSIONS",
     )
-    ocr_engine: str = "paddleocr"
+    ocr_engine: str = "easyocr"
     ocr_lang: str = "en"
     ocr_confidence_threshold: float = 0.60
+    tesseract_cmd: str | None = Field(default=None, alias="TESSERACT_CMD")
 
     github_models_api_key: str | None = Field(default=None, alias="GITHUB_MODELS_API_KEY")
     github_models_endpoint: str = "https://models.github.ai/inference/chat/completions"
@@ -52,8 +53,17 @@ class Settings(BaseSettings):
     @property
     def sqlite_path(self) -> Path:
         if self.database_url.startswith("sqlite:///"):
-            return Path(self.database_url.replace("sqlite:///", "", 1))
+            configured_path = Path(self.database_url.replace("sqlite:///", "", 1))
+            if not configured_path.is_absolute():
+                return BACKEND_DIR / configured_path
+            return configured_path
         return BACKEND_DIR / "app.db"
+
+    @property
+    def resolved_storage_dir(self) -> Path:
+        if self.storage_dir.is_absolute():
+            return self.storage_dir
+        return BACKEND_DIR / self.storage_dir
 
     @property
     def allowed_origins(self) -> list[str]:

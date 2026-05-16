@@ -1,7 +1,8 @@
 from dataclasses import dataclass
 
 from app.core.config import settings
-from app.models.schemas import EvidenceChunk
+from app.models.schemas import EvidenceChunk, LearnedRule
+from app.repositories.documents_repository import fetch_active_learning_rules
 from app.services.llm_service import (
     GitHubModelsService,
     LlmResponseError,
@@ -25,6 +26,8 @@ class DraftGenerationResult:
     evidence: list[EvidenceChunk]
     model_used: str
     grounding_note: str
+    applied_learning_rules: list[LearnedRule]
+    learning_rules_warning: str | None = None
 
 
 class DraftGenerationService:
@@ -42,7 +45,6 @@ class DraftGenerationService:
         document_id: int,
         draft_type: str,
         top_k: int,
-        learning_rules: list[dict[str, object]],
     ) -> DraftGenerationResult:
         if draft_type != "case_fact_summary":
             raise UnsupportedDraftTypeError("Only case_fact_summary is supported.")
@@ -55,6 +57,7 @@ class DraftGenerationService:
         if not retrieval_result.evidence:
             raise NoEvidenceFoundError("No evidence found for draft generation.")
 
+        learning_rules, learning_rules_warning = await self._load_active_learning_rules()
         system_prompt, user_prompt = self.build_case_fact_summary_prompt(
             evidence=retrieval_result.evidence,
             learning_rules=learning_rules,
@@ -68,7 +71,18 @@ class DraftGenerationService:
             evidence=retrieval_result.evidence,
             model_used=settings.github_models_model,
             grounding_note="Draft generated only from retrieved evidence.",
+            applied_learning_rules=self._to_learned_rule_models(learning_rules),
+            learning_rules_warning=learning_rules_warning,
         )
+
+    async def _load_active_learning_rules(self) -> tuple[list[dict[str, object]], str | None]:
+        try:
+            return await fetch_active_learning_rules(limit=10), None
+        except Exception:
+            return (
+                [],
+                "Draft generated without learned rules because active rules could not be loaded.",
+            )
 
     def build_case_fact_summary_prompt(
         self,
@@ -94,7 +108,7 @@ Mandatory rules:
 - Do not provide legal advice.
 - Use cautious legal-style wording.
 - Include unclear OCR warnings where relevant.
-- Follow any active learning rules unless they conflict with grounding.
+- Apply these operator-learned drafting preferences unless they conflict with grounding.
 
 Required draft structure:
 # Case Fact Summary
@@ -106,7 +120,7 @@ Required draft structure:
 ## 5. Missing or Unclear Information
 ## 6. Suggested Next Review Points
 
-Active learning rules:
+Apply these operator-learned drafting preferences:
 {rules_text}
 
 Retrieved evidence:
@@ -117,12 +131,52 @@ Retrieved evidence:
     def _format_learning_rules(self, learning_rules: list[dict[str, object]]) -> str:
         if not learning_rules:
             return "No active learning rules."
+        grouped: dict[str, list[dict[str, object]]] = {}
+        for rule in learning_rules:
+            rule_type = str(rule.get("rule_type") or "drafting").strip() or "drafting"
+            grouped.setdefault(rule_type, []).append(rule)
+
         lines = []
-        for index, rule in enumerate(learning_rules, start=1):
-            lines.append(
-                f"{index}. {rule.get('rule_name')}: {rule.get('rule_description')}"
-            )
+        index = 1
+        for rule_type, rules in grouped.items():
+            lines.append(f"{rule_type.title()}:")
+            for rule in rules:
+                rule_text = self._concise_rule_text(rule.get("rule_description"), limit=180)
+                example_before = self._concise_rule_text(rule.get("example_before"), limit=160)
+                example_after = self._concise_rule_text(rule.get("example_after"), limit=160)
+                example_text = ""
+                if example_before or example_after:
+                    example_text = (
+                        f" Example before: {example_before or 'n/a'}; "
+                        f"example after: {example_after or 'n/a'}."
+                    )
+                lines.append(f"{index}. {rule_text}{example_text}")
+                index += 1
         return "\n".join(lines)
+
+    def _concise_rule_text(self, value: object, limit: int = 240) -> str:
+        text = " ".join(str(value or "").split())
+        if len(text) <= limit:
+            return text
+        return f"{text[: limit - 3].rstrip()}..."
+
+    def _to_learned_rule_models(
+        self,
+        learning_rules: list[dict[str, object]],
+    ) -> list[LearnedRule]:
+        rules = []
+        for index, rule in enumerate(learning_rules, start=1):
+            rules.append(
+                LearnedRule(
+                    rule_id=str(rule.get("id") or index),
+                    rule_type=str(rule.get("rule_type") or "drafting"),
+                    rule_text=self._concise_rule_text(rule.get("rule_description")),
+                    example_before=rule.get("example_before"),
+                    example_after=rule.get("example_after"),
+                    is_active=True,
+                )
+            )
+        return rules
 
     def _format_evidence(self, evidence: list[EvidenceChunk]) -> str:
         blocks = []

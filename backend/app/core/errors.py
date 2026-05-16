@@ -28,10 +28,17 @@ def register_exception_handlers(app: FastAPI) -> None:
     async def http_exception_handler(
         request: Request, exc: StarletteHTTPException
     ) -> JSONResponse:
+        if isinstance(exc.detail, dict):
+            message = str(exc.detail.get("message") or "HTTP error.")
+            details: object | None = exc.detail
+        else:
+            message = str(exc.detail)
+            details = None
         return error_response(
             status_code=exc.status_code,
-            message=str(exc.detail),
+            message=message,
             code="http_error",
+            details=details,
         )
 
     @app.exception_handler(RequestValidationError)

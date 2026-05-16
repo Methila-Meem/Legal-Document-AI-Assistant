@@ -9,7 +9,7 @@ class VectorStoreError(Exception):
 
 class VectorStoreService:
     def __init__(self) -> None:
-        self.persist_directory = Path(settings.storage_dir) / "chroma"
+        self.persist_directory = settings.resolved_storage_dir / "chroma"
         self.collection_name = settings.chroma_collection_name
 
     def replace_document_chunks(

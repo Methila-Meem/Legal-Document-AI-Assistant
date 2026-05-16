@@ -83,7 +83,13 @@ class GitHubModelsService:
         parsed = json.loads(content)
         return StructuredFields.model_validate(parsed)
 
-    async def generate_text(self, *, system_prompt: str, user_prompt: str) -> str:
+    async def generate_text(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        response_format: dict[str, str] | None = None,
+    ) -> str:
         if not self.is_available:
             raise LlmUnavailableError("GitHub Models API key is not configured.")
 
@@ -95,6 +101,8 @@ class GitHubModelsService:
             ],
             "temperature": 0.1,
         }
+        if response_format is not None:
+            payload["response_format"] = response_format
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",

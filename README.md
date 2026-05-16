@@ -4,25 +4,24 @@ Full-stack legal-style document understanding and grounded drafting system for t
 
 ## Overview
 
-The project supports safe legal-style document upload, text extraction from TXT/PDF/images, structured field extraction, retrieval-ready indexing, grounded evidence retrieval from ChromaDB, and grounded first-pass draft generation. Operator edits and learned rules are intentionally deferred to later phases.
+The project supports document upload, TXT/PDF/image text extraction, structured field extraction, retrieval-ready indexing, grounded evidence retrieval, grounded draft generation, and an operator improvement loop that learns reusable drafting rules from saved edits and applies active rules to future drafts.
 
 ## Architecture
 
-- `backend/` - FastAPI API, SQLite schema, startup initialization, upload validation, document processing, structured extraction, chunking, embeddings, ChromaDB indexing, retrieval queries, draft generation, and storage directories
-- `frontend/` - Next.js dashboard with backend health check, drag-and-drop upload, processing controls, structured field display, retrieval indexing controls, evidence results, and editable draft output
-- `sample_data/` - future sample input files
-- `sample_outputs/` - future generated examples
-- `PROJECT_STATE.md` - continuity notes for future development sessions
+- `backend/` - FastAPI API, SQLite schema, upload validation, document processing, structured extraction, embeddings, ChromaDB indexing, retrieval, draft generation, operator edits, learned rules, and local storage.
+- `frontend/` - Next.js reviewer dashboard with a 10-step workflow, gated actions, status messages, evidence display, editable drafts, learned rules, and improved-draft comparison.
+- `sample_data/` - synthetic sample input files for reviewer demos.
+- `sample_outputs/` - synthetic example outputs that illustrate expected behavior.
+- `PROJECT_STATE.md` - continuity notes for future development.
 
 ## Tech Stack
 
 - Backend: Python, FastAPI, Pydantic, SQLite, aiosqlite
-- OCR/PDF: PaddleOCR, PaddlePaddle, PyMuPDF, OpenCV headless, Pillow, numpy
+- OCR/PDF: EasyOCR, optional Tesseract fallback, PyMuPDF, OpenCV headless, Pillow, numpy
 - Retrieval: sentence-transformers/all-MiniLM-L6-v2, ChromaDB
 - Frontend: Next.js, TypeScript, Tailwind CSS, react-dropzone
 - Testing: pytest, httpx
 - LLM extraction/drafting: `gpt-4o-mini` via GitHub Models
-- Later phases: operator edits, learned rules
 
 ## Backend Setup
 
@@ -35,258 +34,78 @@ venv\Scripts\activate
 python -m pip install --upgrade pip
 pip install -r requirements.txt
 copy .env.example .env
+python scripts/check_ocr.py
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-Open the backend at `http://localhost:8000`, not `http://0.0.0.0:8000`.
+macOS/Linux:
 
-## OCR Setup
+```bash
+cd backend
+python -m venv venv
+source venv/bin/activate
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+cp .env.example .env
+python scripts/check_ocr.py
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
 
-PaddleOCR is the default OCR engine. It runs locally through Python dependencies, so no external OCR API or separate system OCR executable is required.
+Open the backend at `http://localhost:8000`.
+
+## OCR Setup and Troubleshooting
+
+Default OCR engine: EasyOCR.
+
+Fallback/optional OCR engine: Tesseract.
+
+OCR runs locally. Digital PDFs are handled by PyMuPDF first and do not require OCR. OCR is only required for scanned PDFs, image files, or PDF pages with little/no extractable text. The first EasyOCR run may download model weights.
 
 Environment options in `backend/.env`:
 
 ```text
-OCR_ENGINE=paddleocr
+OCR_ENGINE=easyocr
 OCR_LANG=en
 OCR_CONFIDENCE_THRESHOLD=0.60
+TESSERACT_CMD=
 ```
 
-The first OCR request may download PaddleOCR model weights. The backend sets Paddle/PaddleOCR cache folders under `backend/storage/processed/ocr_cache/`.
+Allowed `OCR_ENGINE` values are `easyocr`, `tesseract`, and `auto`. In `auto` mode the backend tries EasyOCR first, then Tesseract.
 
-PyMuPDF is still used first for digital PDF text. PaddleOCR is used only for scanned PDFs, image files, or PDF pages with little/no extractable text.
+Install dependencies inside `backend/venv`; do not install them globally and then run the backend from a different Python environment.
 
-## Upload API
+If EasyOCR/PyTorch has issues on Windows:
 
-`POST /api/documents/upload`
-
-Uploads one document using multipart form field `file`.
-
-Supported extensions:
-
-- `pdf`
-- `png`
-- `jpg`
-- `jpeg`
-- `txt`
-
-## Processing API
-
-`POST /api/documents/{document_id}/process`
-
-Response shape:
-
-```json
-{
-  "document_id": "1",
-  "status": "processed",
-  "page_count": 1,
-  "pages": [
-    {
-      "page_number": 1,
-      "source_type": "pdf_text",
-      "text_preview": "Extracted text preview...",
-      "ocr_confidence": null,
-      "is_unclear": false
-    }
-  ],
-  "warnings": []
-}
+```powershell
+pip uninstall torch torchvision easyocr -y
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+pip install easyocr
 ```
 
-Processed output is also saved to:
+Optional Tesseract install on Windows:
+
+```powershell
+winget install --id UB-Mannheim.TesseractOCR -e
+```
+
+Then set:
 
 ```text
-backend/storage/processed/{document_id}.json
+OCR_ENGINE=auto
+TESSERACT_CMD=C:\Program Files\Tesseract-OCR\tesseract.exe
 ```
 
-## Structured Extraction API
+Optional Tesseract install on Linux/macOS:
 
-`POST /api/documents/{document_id}/extract-fields`
-
-The document must already be processed. The endpoint runs rule-based extraction and, when `GITHUB_MODELS_API_KEY` is available, merges validated `gpt-4o-mini` output from GitHub Models.
-
-Backend-only environment variables:
-
-```text
-GITHUB_MODELS_API_KEY=
-GITHUB_MODELS_ENDPOINT=https://models.github.ai/inference/chat/completions
-GITHUB_MODELS_MODEL=gpt-4o-mini
-LLM_TIMEOUT_SECONDS=30
-LLM_MAX_RETRIES=2
+```bash
+sudo apt-get install tesseract-ocr
+brew install tesseract
 ```
 
-If the key is missing or the LLM response fails validation, the system falls back to rules and returns a warning.
+If OCR is unavailable, check `GET /api/health` and run:
 
-Response shape:
-
-```json
-{
-  "document_id": "1",
-  "structured_fields": {
-    "document_type": "Notice",
-    "parties": ["John Smith"],
-    "dates": ["2026-03-05"],
-    "addresses": ["123 Main Street"],
-    "monetary_amounts": ["$2,500"],
-    "case_numbers": ["CIV-2026-7788"],
-    "key_events": [
-      {
-        "event": "Date referenced",
-        "date": "2026-03-05",
-        "source_page": 1
-      }
-    ],
-    "unclear_items": []
-  },
-  "method": "rules",
-  "warnings": []
-}
-```
-
-## Retrieval Index API
-
-`POST /api/documents/{document_id}/index`
-
-The document must already be processed. The endpoint splits page text into overlapping chunks, stores chunk records in SQLite, generates embeddings with `sentence-transformers/all-MiniLM-L6-v2`, writes vectors to ChromaDB, and updates the document status to `indexed`.
-
-Environment options in `backend/.env`:
-
-```text
-EMBEDDING_MODEL_NAME=sentence-transformers/all-MiniLM-L6-v2
-CHROMA_COLLECTION_NAME=legal_document_chunks
-CHUNK_TARGET_CHARS=900
-CHUNK_OVERLAP_CHARS=150
-```
-
-ChromaDB data is stored locally under `backend/storage/chroma/`. The first indexing request may download the embedding model weights.
-
-Response shape:
-
-```json
-{
-  "document_id": "1",
-  "status": "indexed",
-  "chunk_count": 12,
-  "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
-  "vector_db": "ChromaDB"
-}
-```
-
-Re-indexing deletes existing SQLite chunks and Chroma vectors for that document before recreating them.
-
-## Retrieval Query API
-
-`POST /api/retrieval/query`
-
-Searches the ChromaDB collection for relevant chunks from one indexed document. The backend embeds the query with `sentence-transformers/all-MiniLM-L6-v2` and applies a Chroma `document_id` filter so results do not mix evidence from unrelated documents.
-
-Request:
-
-```json
-{
-  "document_id": "1",
-  "query": "Generate a case fact summary from this document.",
-  "top_k": 6
-}
-```
-
-Response:
-
-```json
-{
-  "query": "Generate a case fact summary from this document.",
-  "document_id": "1",
-  "evidence": [
-    {
-      "chunk_id": "12",
-      "document_id": "1",
-      "page_number": 1,
-      "text": "Relevant extracted text...",
-      "relevance_score": 0.87,
-      "source": {
-        "filename": "sample_notice.pdf",
-        "source_type": "ocr",
-        "ocr_confidence": 0.81
-      }
-    }
-  ],
-  "message": null
-}
-```
-
-If no matching chunks are found, the endpoint returns an empty `evidence` list with a clear `message`.
-
-## Draft Generation API
-
-`POST /api/drafts/generate`
-
-Generates a grounded first-pass case fact summary from retrieved evidence. The backend retrieves evidence from ChromaDB, loads active `learning_rules`, builds a grounding prompt, calls `gpt-4o-mini` through GitHub Models, saves the draft and evidence JSON into SQLite, and returns the draft.
-
-Request:
-
-```json
-{
-  "document_id": "1",
-  "draft_type": "case_fact_summary",
-  "top_k": 8
-}
-```
-
-Response:
-
-```json
-{
-  "draft_id": "1",
-  "document_id": "1",
-  "draft_type": "case_fact_summary",
-  "draft": "# Case Fact Summary\n\n...",
-  "evidence": [],
-  "model_used": "gpt-4o-mini",
-  "grounding_note": "Draft generated only from retrieved evidence."
-}
-```
-
-Prompt safeguards:
-
-- Use only retrieved evidence.
-- Every factual claim must include a source reference like `[E1 p.2]`.
-- Missing information must be stated as `Not found in the provided documents.`
-- Do not invent facts.
-- Do not provide legal advice.
-- Use cautious legal-style wording.
-- Include unclear OCR warnings where relevant.
-
-GitHub Models setup in `backend/.env`:
-
-```text
-GITHUB_MODELS_API_KEY=your_backend_only_key
-GITHUB_MODELS_ENDPOINT=https://models.github.ai/inference/chat/completions
-GITHUB_MODELS_MODEL=gpt-4o-mini
-LLM_TIMEOUT_SECONDS=30
-LLM_MAX_RETRIES=2
-```
-
-Never expose `GITHUB_MODELS_API_KEY` to frontend code.
-
-## Health API
-
-`GET /api/health` now includes service status:
-
-```json
-{
-  "status": "ok",
-  "service": "Legal Document AI Assistant",
-  "version": "0.1.0",
-  "services": {
-    "database": "ok",
-    "ocr": {
-      "engine": "PaddleOCR",
-      "available": true,
-      "message": "PaddleOCR dependencies are installed. Model loads on first OCR request."
-    }
-  }
-}
+```powershell
+python scripts/check_ocr.py
 ```
 
 ## Frontend Setup
@@ -297,73 +116,106 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:3000`. The dashboard checks backend health, uploads documents, triggers processing, extracts structured fields, indexes processed text, retrieves inspectable evidence chunks, and generates editable grounded drafts.
+Open `http://localhost:3000`.
 
-## Current Status
+## Full Reviewer Workflow
 
-Completed:
+1. Upload Document
+2. Process Document
+3. Extract Structured Fields
+4. Index for Retrieval
+5. Retrieve Evidence
+6. Generate Grounded Draft
+7. Edit Draft
+8. Save Operator Edit
+9. View Learned Rules
+10. Generate Improved Draft
 
-- FastAPI app shell with CORS
-- `GET /api/health` with database and PaddleOCR status
-- Centralized error response format
-- SQLite schema and startup initialization
-- Safe `POST /api/documents/upload`
-- UUID-based upload storage
-- Document metadata persistence in SQLite
-- `POST /api/documents/{document_id}/process`
-- `POST /api/documents/{document_id}/extract-fields`
-- `POST /api/documents/{document_id}/index`
-- `POST /api/retrieval/query`
-- `POST /api/drafts/generate`
-- TXT direct extraction
-- Digital PDF extraction with PyMuPDF
-- PaddleOCR fallback for scanned/low-text PDF pages
-- Image OCR with preprocessing
-- Page text persistence in `document_pages`
-- Processed JSON output for downstream retrieval
-- Rule-based structured field extraction
-- Optional GitHub Models extraction with rule fallback
-- Structured fields persistence in SQLite
-- Chunking service for processed page text
-- Embedding service using `sentence-transformers/all-MiniLM-L6-v2`
-- ChromaDB vector indexing under `backend/storage/chroma/`
-- SQLite chunk persistence and document status update to `indexed`
-- Document-filtered ChromaDB retrieval over indexed chunks
-- Grounded case fact summary generation with GitHub Models
-- Draft and evidence JSON persistence in SQLite
-- Next.js dashboard upload and processing UI
-- Frontend structured fields panel
-- Frontend retrieval indexing panel
-- Frontend retrieval test panel and evidence display
-- Frontend Generate Draft button and editable draft textarea
-- Root, backend, and frontend documentation
+The frontend disables actions until prerequisites are complete and shows success, warning, and error messages for each async operation.
 
-Verification completed:
+## Demo Workflow
 
-- Backend tests passed with `13 passed`
-- Frontend production build completed successfully
-- Health payload reports PaddleOCR dependency availability
-- Live TXT upload and processing smoke test succeeded after the OCR swap
-- Live TXT upload, processing, and structured extraction smoke test succeeded with rules fallback
-- ChromaDB add/delete smoke test succeeded with fake embeddings
-- Retrieval request validation test passed
-- Draft prompt-builder test passed
+1. Start the backend and frontend.
+2. Upload `sample_data/sample_notice.txt`, `sample_data/sample_notice.pdf`, or `sample_data/sample_notice_scanned.png`.
+3. Click `Process Document`.
+4. Click `Extract Fields`.
+5. Click `Index for Retrieval`.
+6. Run retrieval with a query such as `unpaid rent cure deadline`.
+7. Click `Generate Grounded Draft`.
+8. Edit the draft with a cautious wording preference.
+9. Click `Save Operator Edit`.
+10. Review the Learned Rules panel.
+11. Click `Generate Improved Draft` and compare the previous and improved draft panels.
 
-Pending:
+## Key APIs
 
-- Operator edit workflow
-- Learned rule generation and reuse
+- `GET /api/health` - health check with database and OCR status.
+- `POST /api/documents/upload` - multipart upload using form field `file`.
+- `POST /api/documents/{document_id}/process` - extract and persist page text.
+- `POST /api/documents/{document_id}/extract-fields` - extract structured legal-style fields.
+- `POST /api/documents/{document_id}/index` - chunk text, embed, and index vectors.
+- `POST /api/retrieval/query` - retrieve relevant evidence chunks.
+- `POST /api/drafts/generate` - generate a grounded case fact summary and return `applied_learning_rules`.
+- `POST /api/drafts/{draft_id}/edits` - save an operator edit and learn reusable rules.
+- `GET /api/learning-rules` - list learned rules.
+- `PATCH /api/learning-rules/{rule_id}` - enable or disable a learned rule.
 
-Known issues:
+Processed output is saved to:
 
-- First PaddleOCR use may download model weights and take longer.
-- OCR quality depends on source scan quality and PaddleOCR model behavior.
-- First indexing use may download embedding model weights and take longer.
-- Retrieval quality depends on chunk quality and embedding similarity; there is no reranking yet.
-- Draft quality depends on retrieved evidence and GitHub Models availability.
-- Upload validation is extension-based only.
-- `npm audit --omit=dev` currently reports a moderate advisory in Next.js bundled PostCSS dependency; npm does not provide a clean non-breaking stable fix from the current dependency line.
+```text
+backend/storage/processed/{document_id}.json
+```
 
-## Previous / Alternative OCR
+## Health API
 
-Earlier versions used Tesseract via `pytesseract`, which required a separate system install. The active OCR path now uses PaddleOCR.
+Example OCR health payload:
+
+```json
+{
+  "status": "ok",
+  "service": "Legal Document AI Assistant",
+  "version": "0.1.0",
+  "services": {
+    "database": "ok",
+    "ocr": {
+      "selected_engine": "easyocr",
+      "available": true,
+      "active_engine": "easyocr",
+      "fallback_engine": "tesseract",
+      "error_message": null,
+      "message": "EasyOCR is ready."
+    }
+  }
+}
+```
+
+The health endpoint still returns HTTP 200 when the API and database are running, even if OCR dependencies are unavailable.
+
+## Sample Inputs and Outputs
+
+All files in `sample_data/` and `sample_outputs/` are fully synthetic. They use fake names, fake addresses, fake case numbers, fake dates, and fake amounts. They are provided only to help reviewers quickly understand system behavior.
+
+Sample inputs:
+
+- `sample_data/sample_notice.txt`
+- `sample_data/sample_case_note.txt`
+- `sample_data/sample_notice.pdf`
+- `sample_data/sample_notice_scanned.png`
+- `sample_data/README.md`
+
+Sample outputs:
+
+- `sample_outputs/extracted_text_example.json`
+- `sample_outputs/structured_fields_example.json`
+- `sample_outputs/retrieval_evidence_example.json`
+- `sample_outputs/generated_draft_example.md`
+- `sample_outputs/operator_edit_example.json`
+- `sample_outputs/learned_rules_example.json`
+- `sample_outputs/improved_draft_example.md`
+- `sample_outputs/README.md`
+
+## Draft Improvement Loop
+
+Generated drafts are editable. When an operator saves an edit, the backend stores the edited draft, compares it with the original, extracts reusable improvement rules, stores those rules as active by default, and injects the latest active rules into future draft-generation prompts. The response includes `applied_learning_rules` so reviewers can confirm which preferences were sent to the model.
+
+`applied_learning_rules` means the rules were included in the prompt; it does not guarantee changed output if the model decides the rule is already satisfied or unsupported by retrieved evidence.

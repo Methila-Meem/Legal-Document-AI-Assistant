@@ -32,7 +32,7 @@ def test_upload_txt_file_stores_document(client: TestClient) -> None:
     assert payload["size_bytes"] == 27
     assert payload["status"] == "uploaded"
 
-    stored_path = Path(settings.storage_dir) / "uploads" / payload["stored_filename"]
+    stored_path = settings.resolved_storage_dir / "uploads" / payload["stored_filename"]
     assert stored_path.exists()
     assert stored_path.read_bytes() == b"Sample legal document text."
 

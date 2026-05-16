@@ -57,6 +57,7 @@ class IndexingService:
                     "original_filename": document.original_filename,
                     "source_type": chunk.source_type or "",
                     "ocr_confidence": chunk.ocr_confidence,
+                    "ocr_engine": chunk.ocr_engine or "",
                 },
             }
             for chunk in chunks

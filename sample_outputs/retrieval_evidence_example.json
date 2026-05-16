@@ -1,0 +1,31 @@
+{
+  "query": "unpaid rent cure deadline",
+  "document_id": "sample-notice-demo",
+  "message": null,
+  "evidence": [
+    {
+      "chunk_id": "sample-chunk-1",
+      "document_id": "sample-notice-demo",
+      "page_number": 1,
+      "text": "The document alleges that rent for February 2026 and March 2026 remains unpaid. The stated balance is $4,850.00, consisting of two monthly rent charges and a late fee described in Section 7 of the lease. The notice asks the tenant to cure the alleged default by March 28, 2026.",
+      "relevance_score": 0.86,
+      "source": {
+        "filename": "sample_notice.txt",
+        "source_type": "txt",
+        "ocr_confidence": null
+      }
+    },
+    {
+      "chunk_id": "sample-chunk-2",
+      "document_id": "sample-notice-demo",
+      "page_number": 1,
+      "text": "The notice also states that quarterly revenue reports were not received for the period ending December 31, 2025. The notice does not attach the lease, payment ledger, or revenue reporting form.",
+      "relevance_score": 0.72,
+      "source": {
+        "filename": "sample_notice.txt",
+        "source_type": "txt",
+        "ocr_confidence": null
+      }
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "edit_id": "sample-edit-1",
+  "draft_id": "sample-draft-1",
+  "learned_rules": [
+    {
+      "rule_id": "sample-rule-1",
+      "rule_type": "tone",
+      "rule_text": "Use cautious attribution such as 'the notice states' or 'the document alleges' when describing disputed facts.",
+      "example_before": "The notice alleges that rent for February 2026 and March 2026 remains unpaid.",
+      "example_after": "The notice states that rent for February 2026 and March 2026 allegedly remains unpaid.",
+      "is_active": true
+    },
+    {
+      "rule_id": "sample-rule-2",
+      "rule_type": "clarity",
+      "rule_text": "Include a concise note on the apparent purpose of the document when the evidence supports it.",
+      "example_before": "The lease is not attached in the provided evidence.",
+      "example_after": "The purpose of the document appears to be notice and requested cure of alleged lease defaults, but the full lease and ledger are not provided.",
+      "is_active": true
+    }
+  ],
+  "message": "Operator edit saved and reusable rules extracted.",
+  "warning": null
+}

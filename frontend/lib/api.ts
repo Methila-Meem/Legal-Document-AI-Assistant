@@ -18,7 +18,9 @@ export type ProcessedPage = {
   source_type: "pdf_text" | "ocr" | string;
   text_preview: string;
   ocr_confidence: number | null;
+  ocr_engine: string | null;
   is_unclear: boolean;
+  warnings: string[];
 };
 
 export type ProcessedDocument = {
@@ -89,9 +91,96 @@ export type GeneratedDraft = {
   evidence: EvidenceChunk[];
   model_used: string;
   grounding_note: string;
+  applied_learning_rules: LearnedRule[];
+  learning_rules_warning: string | null;
+};
+
+export type LearnedRule = {
+  rule_id: string;
+  rule_type: string;
+  rule_text: string;
+  example_before: string | null;
+  example_after: string | null;
+  is_active: boolean;
+  source_edit_id?: string | null;
+};
+
+export type DraftEditResult = {
+  edit_id: string;
+  draft_id: string;
+  learned_rules: LearnedRule[];
+  message: string;
+  warning: string | null;
 };
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
+
+function formatApiError(payload: unknown, fallback: string): string {
+  if (!payload || typeof payload !== "object") {
+    return fallback;
+  }
+  const candidate = payload as {
+    detail?: unknown;
+    error?: { message?: unknown; details?: unknown };
+  };
+  const details = candidate.error?.details;
+  if (details && typeof details === "object") {
+    const diagnostic = details as {
+      message?: unknown;
+      error?: unknown;
+      hint?: unknown;
+    };
+    const parts = [
+      diagnostic.message,
+      summarizeDiagnosticText(diagnostic.error),
+      diagnostic.hint,
+    ]
+      .filter((part): part is string => typeof part === "string" && part.trim().length > 0);
+    if (parts.length) {
+      return parts.join(" ");
+    }
+  }
+  if (typeof candidate.error?.message === "string") {
+    return candidate.error.message;
+  }
+  if (typeof candidate.detail === "string") {
+    return candidate.detail;
+  }
+  if (candidate.detail && typeof candidate.detail === "object") {
+    const diagnostic = candidate.detail as {
+      message?: unknown;
+      error?: unknown;
+      hint?: unknown;
+    };
+    const parts = [
+      diagnostic.message,
+      summarizeDiagnosticText(diagnostic.error),
+      diagnostic.hint,
+    ]
+      .filter((part): part is string => typeof part === "string" && part.trim().length > 0);
+    if (parts.length) {
+      return parts.join(" ");
+    }
+  }
+  return fallback;
+}
+
+function summarizeDiagnosticText(value: unknown): string | null {
+  if (typeof value !== "string" || !value.trim()) {
+    return null;
+  }
+  const lines = value
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const importantLine =
+    [...lines].reverse().find((line) => /error|exception|no module|winerror|failed/i.test(line)) ??
+    lines[0];
+  if (!importantLine) {
+    return null;
+  }
+  return importantLine.length > 400 ? `${importantLine.slice(0, 397)}...` : importantLine;
+}
 
 export async function checkBackendHealth(): Promise<HealthStatus> {
   const response = await fetch(`${API_BASE_URL}/api/health`, {
@@ -137,7 +226,7 @@ export async function processDocument(documentId: string): Promise<ProcessedDocu
     let message = `Processing failed with status ${response.status}`;
     try {
       const payload = await response.json();
-      message = payload?.error?.message ?? payload?.detail ?? message;
+      message = formatApiError(payload, message);
     } catch {
       // Keep the generic status message when the response is not JSON.
     }
@@ -244,5 +333,86 @@ export async function generateDraft(
     throw new Error(message);
   }
 
-  return response.json() as Promise<GeneratedDraft>;
+  const payload = (await response.json()) as GeneratedDraft;
+  return {
+    ...payload,
+    evidence: payload.evidence ?? [],
+    applied_learning_rules: payload.applied_learning_rules ?? [],
+    learning_rules_warning: payload.learning_rules_warning ?? null,
+  };
+}
+
+export async function saveOperatorEdit(
+  draftId: string,
+  editedDraft: string,
+): Promise<DraftEditResult> {
+  const response = await fetch(`${API_BASE_URL}/api/drafts/${draftId}/edits`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      edited_draft: editedDraft,
+    }),
+  });
+
+  if (!response.ok) {
+    let message = `Saving operator edit failed with status ${response.status}`;
+    try {
+      const payload = await response.json();
+      message = payload?.error?.message ?? payload?.detail ?? message;
+    } catch {
+      // Keep the generic status message when the response is not JSON.
+    }
+    throw new Error(message);
+  }
+
+  return response.json() as Promise<DraftEditResult>;
+}
+
+export async function getLearningRules(): Promise<LearnedRule[]> {
+  const response = await fetch(`${API_BASE_URL}/api/learning-rules`, {
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    let message = `Loading learned rules failed with status ${response.status}`;
+    try {
+      const payload = await response.json();
+      message = payload?.error?.message ?? payload?.detail ?? message;
+    } catch {
+      // Keep the generic status message when the response is not JSON.
+    }
+    throw new Error(message);
+  }
+
+  return response.json() as Promise<LearnedRule[]>;
+}
+
+export async function updateLearningRule(
+  ruleId: string,
+  isActive: boolean,
+): Promise<LearnedRule> {
+  const response = await fetch(`${API_BASE_URL}/api/learning-rules/${ruleId}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      is_active: isActive,
+    }),
+  });
+
+  if (!response.ok) {
+    let message = `Updating learned rule failed with status ${response.status}`;
+    try {
+      const payload = await response.json();
+      message = payload?.error?.message ?? payload?.detail ?? message;
+    } catch {
+      // Keep the generic status message when the response is not JSON.
+    }
+    throw new Error(message);
+  }
+
+  return response.json() as Promise<LearnedRule>;
 }

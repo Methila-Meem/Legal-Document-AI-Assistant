@@ -1,0 +1,53 @@
+{
+  "document_id": "sample-notice-demo",
+  "method": "rules",
+  "structured_fields": {
+    "document_type": "Notice",
+    "parties": [
+      "Northstar Property Group LLC",
+      "Jordan Blake"
+    ],
+    "dates": [
+      "March 14, 2026",
+      "January 5, 2025",
+      "February 2026",
+      "March 2026",
+      "March 28, 2026",
+      "December 31, 2025"
+    ],
+    "addresses": [
+      "4100 Ledger Avenue, Suite 205, Riverton, Fictional State 10021",
+      "Unit 4B, 18 Mockingbird Court, Riverton, Fictional State 10022"
+    ],
+    "monetary_amounts": [
+      "$4,850.00"
+    ],
+    "case_numbers": [
+      "CIV-DEMO-2026-0417"
+    ],
+    "key_events": [
+      {
+        "event": "Notice dated",
+        "date": "March 14, 2026",
+        "source_page": 1
+      },
+      {
+        "event": "Lease agreement date referenced",
+        "date": "January 5, 2025",
+        "source_page": 1
+      },
+      {
+        "event": "Cure deadline stated",
+        "date": "March 28, 2026",
+        "source_page": 1
+      }
+    ],
+    "unclear_items": [
+      "Section 7 is referenced but not quoted.",
+      "Payment ledger is not attached.",
+      "Preparer name is partly illegible in the original scan.",
+      "Partial payment status is not stated."
+    ]
+  },
+  "warnings": []
+}

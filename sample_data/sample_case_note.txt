@@ -1,0 +1,37 @@
+SYNTHETIC SAMPLE - INTERNAL CASE NOTE
+
+Case File: DEMO-CV-2026-1182
+Prepared Date: April 3, 2026
+Prepared By: Avery Chen, Intake Coordinator
+
+Matter:
+Potential breach of commercial lease involving alleged unpaid rent and missing
+quarterly reporting materials.
+
+Parties Mentioned:
+- Northstar Property Group LLC, possible claimant or landlord
+- Jordan Blake, possible tenant
+- Meridian Office Services Inc., possible guarantor named in a separate guaranty
+  agreement
+
+Known Facts From Intake:
+1. The lease was reportedly signed on January 5, 2025.
+2. The leased premises are described as Unit 4B, 18 Mockingbird Court, Riverton,
+   Fictional State 10022.
+3. A notice dated March 14, 2026 alleges that $4,850.00 remains unpaid.
+4. The notice states that the cure deadline is March 28, 2026.
+5. The client also mentioned missing quarterly revenue reports for the period
+   ending December 31, 2025.
+
+Open Questions:
+- The intake file does not include the full lease.
+- It is unclear whether the tenant disputes the amount.
+- It is unclear whether Meridian Office Services Inc. signed the guaranty.
+- The exact mailing method for the notice is not confirmed.
+- The intake note does not contain a court filing date.
+
+Suggested Follow-Up:
+Request the executed lease, payment ledger, proof of mailing, revenue report
+request, and any guaranty agreement before preparing a final legal position.
+
+This sample is fictional and is provided only for testing the application.

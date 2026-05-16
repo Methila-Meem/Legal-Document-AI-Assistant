@@ -51,7 +51,7 @@ class EmbeddingService:
             return self.__class__._model
 
     def _configure_cache_environment(self) -> None:
-        cache_dir = settings.storage_dir / "processed" / "embedding_cache"
+        cache_dir = settings.resolved_storage_dir / "processed" / "embedding_cache"
         cache_dir.mkdir(parents=True, exist_ok=True)
         os.environ.setdefault("SENTENCE_TRANSFORMERS_HOME", str(cache_dir))
         os.environ.setdefault("HF_HOME", str(cache_dir / "huggingface"))

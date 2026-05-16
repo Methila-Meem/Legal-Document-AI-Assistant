@@ -16,6 +16,16 @@ class DocumentRecord:
     status: str
 
 
+@dataclass(frozen=True)
+class DraftRecord:
+    id: int
+    document_id: int
+    draft_type: str
+    content: str
+    evidence_json: str | None
+    model_name: str | None
+
+
 async def insert_document(
     *,
     original_filename: str,
@@ -115,10 +125,11 @@ async def replace_document_pages(
                     extracted_text,
                     source_type,
                     ocr_confidence,
+                    ocr_engine,
                     is_unclear,
                     status
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     document_id,
@@ -126,6 +137,7 @@ async def replace_document_pages(
                     page["text"],
                     page["source_type"],
                     page["ocr_confidence"],
+                    page.get("ocr_engine"),
                     1 if page["is_unclear"] else 0,
                     "processed",
                 ),
@@ -138,7 +150,8 @@ async def fetch_processed_pages(document_id: int) -> list[dict[str, object]]:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
             """
-            SELECT page_number, extracted_text, source_type, ocr_confidence, is_unclear
+            SELECT page_number, extracted_text, source_type, ocr_confidence,
+                   ocr_engine, is_unclear
             FROM document_pages
             WHERE document_id = ?
             ORDER BY page_number ASC
@@ -153,6 +166,7 @@ async def fetch_processed_pages(document_id: int) -> list[dict[str, object]]:
             "text": row["extracted_text"] or "",
             "source_type": row["source_type"],
             "ocr_confidence": row["ocr_confidence"],
+            "ocr_engine": row["ocr_engine"],
             "is_unclear": bool(row["is_unclear"]),
         }
         for row in rows
@@ -236,15 +250,44 @@ async def insert_chunks(
     return inserted
 
 
-async def fetch_active_learning_rules() -> list[dict[str, object]]:
+async def fetch_active_learning_rules(limit: int = 10) -> list[dict[str, object]]:
     async with aiosqlite.connect(settings.sqlite_path) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
             """
-            SELECT id, rule_name, rule_description, rule_type
+            SELECT id, rule_name, rule_description, rule_type,
+                   example_before, example_after
             FROM learning_rules
             WHERE is_active = 1
-            ORDER BY created_at ASC
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        rows = await cursor.fetchall()
+
+    return [
+        {
+            "id": row["id"],
+            "rule_name": row["rule_name"],
+            "rule_description": row["rule_description"],
+            "rule_type": row["rule_type"],
+            "example_before": row["example_before"],
+            "example_after": row["example_after"],
+        }
+        for row in rows
+    ]
+
+
+async def fetch_learning_rules() -> list[dict[str, object]]:
+    async with aiosqlite.connect(settings.sqlite_path) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT id, rule_name, rule_description, rule_type,
+                   example_before, example_after, source_edit_id, is_active
+            FROM learning_rules
+            ORDER BY created_at DESC, id DESC
             """
         )
         rows = await cursor.fetchall()
@@ -255,9 +298,43 @@ async def fetch_active_learning_rules() -> list[dict[str, object]]:
             "rule_name": row["rule_name"],
             "rule_description": row["rule_description"],
             "rule_type": row["rule_type"],
+            "example_before": row["example_before"],
+            "example_after": row["example_after"],
+            "source_edit_id": row["source_edit_id"],
+            "is_active": bool(row["is_active"]),
         }
         for row in rows
     ]
+
+
+async def update_learning_rule_active(rule_id: int, is_active: bool) -> dict[str, object] | None:
+    async with aiosqlite.connect(settings.sqlite_path) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            UPDATE learning_rules
+            SET is_active = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            RETURNING id, rule_name, rule_description, rule_type,
+                      example_before, example_after, source_edit_id, is_active
+            """,
+            (1 if is_active else 0, rule_id),
+        )
+        row = await cursor.fetchone()
+        await db.commit()
+
+    if row is None:
+        return None
+    return {
+        "id": row["id"],
+        "rule_name": row["rule_name"],
+        "rule_description": row["rule_description"],
+        "rule_type": row["rule_type"],
+        "example_before": row["example_before"],
+        "example_after": row["example_after"],
+        "source_edit_id": row["source_edit_id"],
+        "is_active": bool(row["is_active"]),
+    }
 
 
 async def insert_draft(
@@ -294,3 +371,101 @@ async def insert_draft(
     if draft_id is None:
         raise RuntimeError("Draft insert did not return an id.")
     return draft_id
+
+
+async def fetch_draft(draft_id: int) -> DraftRecord | None:
+    async with aiosqlite.connect(settings.sqlite_path) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT id, document_id, draft_type, content, evidence_json, model_name
+            FROM drafts
+            WHERE id = ?
+            """,
+            (draft_id,),
+        )
+        row = await cursor.fetchone()
+
+    if row is None:
+        return None
+    return DraftRecord(
+        id=row["id"],
+        document_id=row["document_id"],
+        draft_type=row["draft_type"],
+        content=row["content"],
+        evidence_json=row["evidence_json"],
+        model_name=row["model_name"],
+    )
+
+
+async def insert_operator_edit(
+    *,
+    draft_id: int,
+    original_content: str,
+    edited_content: str,
+    edit_notes: str,
+) -> int:
+    async with aiosqlite.connect(settings.sqlite_path) as db:
+        cursor = await db.execute(
+            """
+            INSERT INTO operator_edits (
+                draft_id,
+                original_content,
+                edited_content,
+                edit_notes
+            )
+            VALUES (?, ?, ?, ?)
+            """,
+            (draft_id, original_content, edited_content, edit_notes),
+        )
+        await db.commit()
+        edit_id = cursor.lastrowid
+
+    if edit_id is None:
+        raise RuntimeError("Operator edit insert did not return an id.")
+    return edit_id
+
+
+async def insert_learning_rules(
+    *,
+    source_edit_id: int,
+    rules: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    inserted: list[dict[str, object]] = []
+    async with aiosqlite.connect(settings.sqlite_path) as db:
+        for rule in rules:
+            rule_text = str(rule["rule_text"]).strip()
+            rule_type = str(rule.get("rule_type") or "drafting").strip() or "drafting"
+            cursor = await db.execute(
+                """
+                INSERT INTO learning_rules (
+                    rule_name,
+                    rule_description,
+                    rule_type,
+                    example_before,
+                    example_after,
+                    source_edit_id,
+                    is_active
+                )
+                VALUES (?, ?, ?, ?, ?, ?, 1)
+                """,
+                (
+                    rule_type.replace("_", " ").title(),
+                    rule_text,
+                    rule_type,
+                    rule.get("example_before"),
+                    rule.get("example_after"),
+                    source_edit_id,
+                ),
+            )
+            rule_id = cursor.lastrowid
+            if rule_id is None:
+                raise RuntimeError("Learning rule insert did not return an id.")
+            stored = dict(rule)
+            stored["id"] = rule_id
+            stored["rule_name"] = rule_type.replace("_", " ").title()
+            stored["rule_description"] = rule_text
+            stored["is_active"] = True
+            inserted.append(stored)
+        await db.commit()
+    return inserted

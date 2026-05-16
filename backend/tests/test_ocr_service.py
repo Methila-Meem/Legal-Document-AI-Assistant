@@ -1,27 +1,32 @@
 import pytest
 
-from app.services.ocr_service import PaddleOCRService
+from app.core.config import settings
+from app.services.ocr_service import OCRManager, SUPPORTED_OCR_ENGINES
 
 
-def test_paddleocr_health_reports_dependencies(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(PaddleOCRService, "_ocr_instance", None)
-    monkeypatch.setattr(PaddleOCRService, "_init_error", None)
-
-    health = PaddleOCRService.health()
-
-    assert health["engine"] == "PaddleOCR"
-    assert "available" in health
-    assert "message" in health
-
-
-def test_paddleocr_health_reports_cached_initialization_failure(
+def test_ocr_engine_config_accepts_supported_values(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(PaddleOCRService, "_ocr_instance", None)
-    monkeypatch.setattr(PaddleOCRService, "_init_error", "PaddleOCR failed to initialize.")
+    for engine in ("easyocr", "tesseract", "auto"):
+        monkeypatch.setattr(settings, "ocr_engine", engine)
+        status = OCRManager.health()
 
-    health = PaddleOCRService.health()
+        assert status["selected_engine"] == engine
+        assert "available" in status
+        assert "active_engine" in status
+        assert status["fallback_engine"] == "tesseract"
 
-    assert health["engine"] == "PaddleOCR"
-    assert health["available"] is False
-    assert health["message"] == "PaddleOCR failed to initialize."
+
+def test_ocr_engine_config_rejects_unsupported_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "ocr_engine", "unsupported")
+
+    status = OCRManager.health()
+
+    assert status["available"] is False
+    assert "Unsupported OCR_ENGINE value" in str(status["error_message"])
+
+
+def test_no_removed_ocr_engine_in_supported_values() -> None:
+    assert SUPPORTED_OCR_ENGINES == {"easyocr", "tesseract", "auto"}

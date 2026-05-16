@@ -1,0 +1,16 @@
+{
+  "document_id": "sample-notice-demo",
+  "source_file": "sample_notice.txt",
+  "status": "processed",
+  "page_count": 1,
+  "pages": [
+    {
+      "page_number": 1,
+      "source_type": "txt",
+      "ocr_confidence": null,
+      "is_unclear": false,
+      "extracted_text": "SYNTHETIC SAMPLE - NOTICE OF DEFAULT AND REQUEST FOR CURE\n\nDate: March 14, 2026\nReference No.: CIV-DEMO-2026-0417\n\nFrom:\nNorthstar Property Group LLC\n4100 Ledger Avenue, Suite 205\nRiverton, Fictional State 10021\n\nTo:\nJordan Blake\nUnit 4B, 18 Mockingbird Court\nRiverton, Fictional State 10022\n\nRe: Notice concerning alleged unpaid rent and lease reporting obligations\n\nThis synthetic notice concerns the lease agreement dated January 5, 2025, for the commercial office unit at 18 Mockingbird Court, Unit 4B. The document states that Jordan Blake is listed as tenant and Northstar Property Group LLC is listed as landlord.\n\nThe document alleges that rent for February 2026 and March 2026 remains unpaid. The stated balance is $4,850.00, consisting of two monthly rent charges and a late fee described in Section 7 of the lease. The notice asks the tenant to cure the alleged default by March 28, 2026.\n\nThe notice also states that quarterly revenue reports were not received for the period ending December 31, 2025. The notice does not attach the lease, payment ledger, or revenue reporting form.\n\nImportant unclear items:\n- The notice references \"Section 7\" but does not quote the section text.\n- The payment ledger is not attached.\n- The name of the person who prepared the notice is handwritten and partly illegible in the original scan.\n- The notice does not state whether any partial payment was received."
+    }
+  ],
+  "warnings": []
+}
